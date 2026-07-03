@@ -13,9 +13,13 @@ CHECK API는 `https://checkapi.koscom.co.kr`를 base URL로 사용하는 금융 
 ## 기본 호출 형태
 
 ```text
-GET https://checkapi.koscom.co.kr{apiurl}?cust_id=...&auth_key=...
 POST https://checkapi.koscom.co.kr{apiurl}
+Content-Type: application/x-www-form-urlencoded
+
+cust_id=...&auth_key=...&jcode=...
 ```
+
+**반드시 `POST`로 호출하고 파라미터는 요청 본문(body)에 담아야 합니다.** `GET`으로 보내거나, `POST`라도 파라미터를 URL 쿼리스트링에 넣으면 자격증명이 맞아도 `{"success": false, "message": "cust_id 또는 auth_key가 정확하지 않습니다."}`로 거부됩니다. 본문 형식은 form-urlencoded와 JSON 둘 다 동작합니다.
 
 대부분 endpoint는 `cust_id`, `auth_key`가 필수입니다. 일부 조회는 `jcode`, `sdate`, `edate`, `term`, `codelist`, `data_list` 등을 추가로 받습니다.
 

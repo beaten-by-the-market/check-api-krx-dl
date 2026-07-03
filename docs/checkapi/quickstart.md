@@ -14,7 +14,13 @@
 ## curl 예시
 
 ```bash
-curl "https://checkapi.koscom.co.kr/stock/m001/hist_info?cust_id=$CHECK_CUST_ID&auth_key=$CHECK_AUTH_KEY&jcode=005930&sdate=20250101&edate=20250131"
+# 파라미터는 -d (요청 본문)로 전달. GET/쿼리스트링은 인증 거부됨.
+curl -X POST "https://checkapi.koscom.co.kr/stock/m001/hist_info" \
+  -d "cust_id=$CHECK_CUST_ID" \
+  -d "auth_key=$CHECK_AUTH_KEY" \
+  -d "jcode=005930" \
+  -d "sdate=20250101" \
+  -d "edate=20250131"
 ```
 
 ## Python requests 예시
@@ -33,7 +39,8 @@ params = {
     "edate": "20250131",
 }
 
-response = requests.get(f"{BASE_URL}/stock/m001/hist_info", params=params, timeout=60)
+# 파라미터는 params(쿼리스트링)가 아니라 data(요청 본문)로 전달해야 합니다.
+response = requests.post(f"{BASE_URL}/stock/m001/hist_info", data=params, timeout=60)
 response.raise_for_status()
 data = response.json()
 print(data)

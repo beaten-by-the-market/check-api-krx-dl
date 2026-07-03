@@ -33,7 +33,8 @@ class CheckApiClient:
             "auth_key": self.auth_key,
             **{k: v for k, v in params.items() if v is not None},
         }
-        response = requests.get(f"{self.base_url}{apiurl}", params=payload, timeout=self.timeout)
+        # CHECK API는 파라미터를 요청 본문(body)으로 받는 POST만 허용합니다.
+        response = requests.post(f"{self.base_url}{apiurl}", data=payload, timeout=self.timeout)
         response.raise_for_status()
         data = response.json()
         if data.get("success") is False:
