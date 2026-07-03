@@ -21,6 +21,8 @@ cust_id=...&auth_key=...&jcode=...
 
 **반드시 `POST`로 호출하고 파라미터는 요청 본문(body)에 담아야 합니다.** `GET`으로 보내거나, `POST`라도 파라미터를 URL 쿼리스트링에 넣으면 자격증명이 맞아도 `{"success": false, "message": "cust_id 또는 auth_key가 정확하지 않습니다."}`로 거부됩니다. 본문 형식은 form-urlencoded와 JSON 둘 다 동작합니다.
 
+**접근 IP 제한:** CHECK API는 발급 시 등록한 IP에서의 호출만 허용합니다. 자격증명이 정확해도 등록되지 않은 IP(사내 프록시, 클라우드/컨테이너, 샌드박스 등 다른 경로)로 나가면 위와 동일한 `success: false` 인증 실패 메시지로 거부됩니다. 즉 이 메시지는 "키가 틀렸다"만이 아니라 "IP가 등록 대상이 아니다"일 수도 있습니다. MCP 서버·배치·스케줄러는 반드시 **등록 IP 호스트에서 직접 실행**해야 합니다.
+
 대부분 endpoint는 `cust_id`, `auth_key`가 필수입니다. 일부 조회는 `jcode`, `sdate`, `edate`, `term`, `codelist`, `data_list` 등을 추가로 받습니다.
 
 ## 자주 쓰는 공통 파라미터

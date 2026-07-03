@@ -12,7 +12,7 @@
 
 ## 처리 가이드
 
-- `access_denied`: `cust_id`, `auth_key` 재확인
+- `access_denied`: `cust_id`, `auth_key` 재확인. 값이 맞는데도 거부되면 **호출 IP가 발급 시 등록한 IP인지** 확인 (등록 외 IP도 같은 인증 실패로 응답)
 - `jcode_denied`: 종목코드/업종코드 시장 구분 재확인
 - `date_denied`: `YYYYMMDD` 형식 및 조회 가능 기간 확인
 - `term_denied`: `daily`, `weekly`, `monthly`, `quarterly`, `YTD`, `yearly` 등 endpoint 설명에 맞는 값 사용

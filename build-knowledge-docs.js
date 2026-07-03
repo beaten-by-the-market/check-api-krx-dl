@@ -194,6 +194,8 @@ cust_id=...&auth_key=...&jcode=...
 
 **반드시 \`POST\`로 호출하고 파라미터는 요청 본문(body)에 담아야 합니다.** \`GET\`으로 보내거나, \`POST\`라도 파라미터를 URL 쿼리스트링에 넣으면 자격증명이 맞아도 \`{"success": false, "message": "cust_id 또는 auth_key가 정확하지 않습니다."}\`로 거부됩니다. 본문 형식은 form-urlencoded와 JSON 둘 다 동작합니다.
 
+**접근 IP 제한:** CHECK API는 발급 시 등록한 IP에서의 호출만 허용합니다. 자격증명이 정확해도 등록되지 않은 IP(사내 프록시, 클라우드/컨테이너, 샌드박스 등 다른 경로)로 나가면 위와 동일한 \`success: false\` 인증 실패 메시지로 거부됩니다. 즉 이 메시지는 "키가 틀렸다"만이 아니라 "IP가 등록 대상이 아니다"일 수도 있습니다. MCP 서버·배치·스케줄러는 반드시 **등록 IP 호스트에서 직접 실행**해야 합니다.
+
 대부분 endpoint는 \`cust_id\`, \`auth_key\`가 필수입니다. 일부 조회는 \`jcode\`, \`sdate\`, \`edate\`, \`term\`, \`codelist\`, \`data_list\` 등을 추가로 받습니다.
 
 ## 자주 쓰는 공통 파라미터
@@ -271,6 +273,24 @@ print(data)
 - \`success: true\`이면 \`results\`를 pandas DataFrame으로 변환한다.
 - \`success: false\`이면 \`message\` 또는 \`errmsg\`를 사용자에게 그대로 보여준다.
 - \`data_list\`를 비우면 전체 필드를 조회한다. 네트워크/응답 크기를 줄이고 싶으면 필요한 F-code만 쉼표로 넘긴다.
+
+## 응답 필드는 F-code다
+
+\`results\`의 각 행은 컬럼명이 한글이 아니라 **F-code**입니다. 예를 들어 \`/stock/m001/hist_info\` 응답은 이렇게 내려옵니다.
+
+\`\`\`json
+{"F12506": 20250605, "F16013": "005930", "F15001": "59100", "F15010": "59900", "F15011": "57900"}
+\`\`\`
+
+| F-code | 의미 |
+| --- | --- |
+| F12506 | 입회일 |
+| F16013 | 단축코드 |
+| F15001 | 현재가 |
+| F15010 | 고가 |
+| F15011 | 저가 |
+
+사람이 읽는 컬럼명으로 바꾸려면 \`../catalogs/checkapi-response-fields.csv\`(전체 F-code 사전) 또는 \`../../checkapi-specs.json\`의 \`specs[].res\`로 **F-code → 설명**을 매핑하세요. endpoint마다 내려오는 F-code 집합이 다르므로, 클라이언트/MCP에서는 해당 endpoint의 \`res\` 정의를 기준으로 디코딩하는 것이 안전합니다.
 `
   );
 
@@ -285,7 +305,7 @@ ${table(
 
 ## 처리 가이드
 
-- \`access_denied\`: \`cust_id\`, \`auth_key\` 재확인
+- \`access_denied\`: \`cust_id\`, \`auth_key\` 재확인. 값이 맞는데도 거부되면 **호출 IP가 발급 시 등록한 IP인지** 확인 (등록 외 IP도 같은 인증 실패로 응답)
 - \`jcode_denied\`: 종목코드/업종코드 시장 구분 재확인
 - \`date_denied\`: \`YYYYMMDD\` 형식 및 조회 가능 기간 확인
 - \`term_denied\`: \`daily\`, \`weekly\`, \`monthly\`, \`quarterly\`, \`YTD\`, \`yearly\` 등 endpoint 설명에 맞는 값 사용
