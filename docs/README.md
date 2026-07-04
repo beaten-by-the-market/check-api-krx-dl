@@ -24,4 +24,3 @@
 
 - `../checkapi-specs.json`: CHECK API 전체 명세 747개
 - `../kquant-docs.json`: kquant 문서 96개 함수/타입
-- `../checkapi-summary.md`, `../kquant-summary.md`: 추출 요약
