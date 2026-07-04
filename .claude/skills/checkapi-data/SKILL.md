@@ -74,6 +74,16 @@ python .claude/skills/checkapi-data/scripts/search_endpoints.py 외국인 순매
 4단계 모두 비면 그때 범위 밖(확정 부재: VI·VKOSPI·투자자예탁금·배당락/권리락·국내주식 배당/PER·
 **Brent/두바이 유가·투자주체별 공매도** — 상세 `references/market-analysis.md`). ※ 해외 주가지수·위안/달러는 구독(유형1)으로 가능.
 
+**"없음"은 잠정 판정 — 근거가 오면 반드시 재탐색한다.** (이 스킬 개발 중 "없음"이라 했다가
+지수·원달러·과열·국채·US10년·WTI를 뒤늦게 찾은 게 6회+. "없음"은 절대 단정이 아니다.)
+신호의 강도로 대응을 가른다:
+- **CHECK API 자체 소스**(`checkapi.koscom.co.kr/intro`·명세·API 탐색기·live `code_info`/`checkcode`·단말 메뉴):
+  **강한 신호 → 있으면 API에 있다.** 못 찾았으면 내 검색 방식 문제 → 필드·코드·파라미터·미탐색 endpoint·코드 변형으로
+  **끝까지 다시 판다.** (intro 페이지는 checkapi-specs.json의 원천이므로 거기 보이면 반드시 존재.)
+- **별개 상품**(Excel 프리미엄·타 단말기 매뉴얼): **약한 신호 — 카탈로그가 다를 수 있다.**
+  힌트로만 쓰고, 코드체계가 API와 다를 수 있음을 감안(실측: Excel 원유코드 144xxx는 API에서 502).
+- 사용자가 "공식 화면에서 봤다"고 하면 **반박하지 말고 그 단서(endpoint/필드/코드명)로 재조사**한다.
+
 **지수 값은 된다(한때 오판했던 부분).** 코스피/코스닥 지수·업종 지수는 **m002(코스피)/m004(코스닥)**
 레벨에서 조회한다: `m002/code_info`로 지수코드 확인(코스피 종합=`1`), `m002/hist_info jcode=<코드>`로
 지수값·등락률·거래대금, `m002/invest_hist_info`로 시장 단위 투자자 수급. 상세 `references/market-analysis.md`.
