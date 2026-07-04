@@ -3,6 +3,9 @@
 KOSCOM CHECK API와 `kquant` 패키지를 다루기 위한 **지식 베이스**와, 그 위에서
 한국 시장 데이터를 조회·분석하고 **KRX 시황 리포트를 재현**하는 **Claude Code 스킬**을 담은 저장소.
 
+> **설치·사용(새 PC 세팅, `.env`, IP, claude.ai 웹 제약)은 [SETUP.md](SETUP.md) 참조.**
+> 실데이터는 **KOSCOM 등록 IP** PC에서 Claude Code로만 동작한다.
+
 ## 1. Claude Code 스킬 — `.claude/skills/checkapi-data/`
 
 자연어로 "이런 걸 분석하고 싶다"고 하면 맞는 endpoint를 찾아 호출·결합해 주는 스킬.
