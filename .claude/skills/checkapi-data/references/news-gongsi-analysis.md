@@ -113,10 +113,27 @@
 | PS6 | 신고가 돌파(마지막일 종가≥기간 전고) | hist+gongsi_stock | 정의 엄격(보수적) |
 | PS7 | 기간 주목도 종합(|수익률|+2·최대일변+30·|거래대금증가율−1|) | rank+hist+gongsi_stock | 주목주 자동 랭크 + 공시 체인 |
 
-**price-first 함정**: `rank`는 **날짜 파라미터가 없어 '오늘(최신 거래일)'만** 된다(PS1/PS2는 당일). 기간
-스크리닝(PS3~PS7)은 '현재 거래대금 상위 N'을 유동성 유니버스로 삼아 과거지표를 계산(과거 상폐/신규는
-근사적으로 빠짐). `rank` 결과엔 ETF/ETN이 섞여 나와 `market_snapshot(exclude_etp=True)`로 제외.
-공시 없는 종목은 `gongsi_jong`이 `success:false "No Data"`를 주는데 `call()`이 **빈 리스트로 처리**한다.
+**price-first 함정**: `rank`는 **날짜 파라미터가 없어 '오늘(최신 거래일)'만** 된다(PS1/PS2는 당일). `rank`
+결과엔 ETF/ETN이 섞여 나와 `market_snapshot(exclude_etp=True)`로 제외. 공시 없는 종목은 `gongsi_jong`이
+`success:false "No Data"`를 주는데 `call()`이 **빈 리스트로 처리**한다.
+
+**전체종목 벌크(유니버스 상한 제거)** — 축·시장별로 갈린다(전부 실측):
+
+| | KOSPI(m001) | KOSDAQ(m003) |
+| --- | --- | --- |
+| **현재일 전종목** | `basic_info_all_port`(100+필드) / `rank` | **`basic_info_all_port` 됨** — 숫자코드 1,771개 한 콜 성공 |
+| **과거 기간 일별 OHLCV** | `hist_info_port(codelist, edate)` **날짜 루프**(저비용) | **없음** — hist_info_port가 404. 종목별 `hist_info` 루프뿐 |
+
+- **코스콤 버그(실측 확정)**: `basic_info_all_port`/`hist_info_port` codelist에 **영숫자 6자리 코드**
+  (스팩·최근상장: `0039P0` 등)가 **1개라도 섞이면 `Error while performing Query`로 배치 전체 실패**.
+  → **숫자코드만** 보내면 전 코스닥 1,771종목도 한 콜에 성공. 헬퍼는 `numeric_only=True`(기본)로 자동 필터.
+- `basic_info_all_port`는 **edate를 무시하고 항상 현재일**(과거일 불가). 과거 기간엔 못 쓴다.
+- 헬퍼: `basic_all_port(codes, fam)` 현재일 벌크 · `hist_port(codes, edate)` KOSPI 과거일 벌크 ·
+  `bulk_hist_period({'m001':[…],'m003':[…]}, s, e)` 코스피=날짜루프/코스닥=종목루프(`m003_limit`로 상위 N) ·
+  `market_period_screen(s, e, m003_limit=N, min_amt_억=1)` 전종목 기간지표.
+  실측: **KOSPI 1,129종목 3거래일 = ~6콜 1.1초**.
+- 기간 스크리너(PS3~PS7)는 기본이 '거래대금 상위 유니버스'지만, KOSPI 전종목을 원하면
+  `market_period_screen`으로 대체(코스닥 과거기간은 종목루프라 `m003_limit` 권장).
 
 ## 사용 예 (헬퍼)
 ```python
