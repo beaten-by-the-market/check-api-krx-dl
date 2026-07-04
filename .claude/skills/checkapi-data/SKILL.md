@@ -60,10 +60,19 @@ python .claude/skills/checkapi-data/scripts/search_endpoints.py 외국인 순매
   이 지표들은 제목엔 없고 **필드에만** 있어서 `search_endpoints`로는 안 잡힌다.
 시황분석 질문은 먼저 `references/market-analysis.md`(시나리오→endpoint 치트시트)를 참조한다.
 
-**"검색 안 됨"과 "없음"을 혼동하지 말 것.** `search_endpoints`(제목)가 비어도 지표가 필드에
-있을 수 있다. **`search_fields.py` 로 필드까지 확인한 뒤에만** 범위 밖이라고 판단한다.
-필드에도 없으면 그때 범위 밖으로 안내한다(확인된 진짜 범위 밖: 환율/FX·VI·VKOSPI/변동성지수·
-투자자예탁금·배당락/권리락·국내주식 배당/PER·해외지수 — 상세 `references/market-analysis.md`).
+**"검색 안 됨" ≠ "없음" — "없음" 판정 전 4단계를 모두 확인한다.**
+제목/필드 검색이 비어도 능력은 대개 **코드 카탈로그·파라미터·메뉴**에 숨어 있다(실전에서 지수·원달러·
+해외금리·WTI를 이 단계 누락으로 "없음" 오판했다). 순서대로:
+1. **필드** — `search_fields.py <지표>` (제목엔 없고 res 필드에만: 베이시스·과열 `F34989` 등).
+2. **코드목록** — **`search_codes.py <키워드>`** 로 code_info/checkcode 카탈로그(35,340개)를 검색.
+   **명세엔 없고 코드로만** 존재하는 능력이 여기 있다: 지수(m002/m004/m167)·지표물(`bond/m058/jipyo_list`)·
+   원/달러(`bond/m023` 00USDSP)·해외금리(`bond/m025` GBUS10Y)·경제지표 30,316개(`USUST10YRD`·`USDXYD`·`USCOMCL1D`)·종목명↔코드.
+   예: `search_codes.py 원달러` → `00USDSP`. (최초 1회 `cache_codes.py`로 캐시 생성 — 등록 IP·샌드박스 밖)
+3. **파라미터·결합** — 날짜/코드로 되는지(국고채 = `jipyo_list edate` → `m038` F15175 수익률).
+4. **메뉴맵** — 사람이 보는 메뉴명↔패밀리(외국환중개·해외금리·해외환율 등) → `references/market-analysis.md`.
+
+4단계 모두 비면 그때 범위 밖(확정 부재: VI·VKOSPI·투자자예탁금·배당락/권리락·국내주식 배당/PER·
+**Brent/두바이 유가·투자주체별 공매도** — 상세 `references/market-analysis.md`). ※ 해외 주가지수·위안/달러는 구독(유형1)으로 가능.
 
 **지수 값은 된다(한때 오판했던 부분).** 코스피/코스닥 지수·업종 지수는 **m002(코스피)/m004(코스닥)**
 레벨에서 조회한다: `m002/code_info`로 지수코드 확인(코스피 종합=`1`), `m002/hist_info jcode=<코드>`로

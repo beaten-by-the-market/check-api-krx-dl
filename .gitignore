@@ -8,3 +8,6 @@ node_modules/
 
 # 제3자 영업 문서(공개 저장소에 올리지 않음)
 견적서.jpg
+
+# 코드 카탈로그 캐시(대용량·KOSCOM 데이터, 로컬 생성)
+.claude/skills/checkapi-data/cache/
