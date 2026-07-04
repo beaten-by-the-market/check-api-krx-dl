@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(**)",
+      "Write(**)",
+      "Edit(/.claude/skills/checkapi-data/**)",
+      "Bash(python -m py_compile news_gongsi_lab.py scenarios_price_first.py)",
+      "Bash(rm -f ps_all.txt body_perf.txt)"
+    ]
+  }
+}
