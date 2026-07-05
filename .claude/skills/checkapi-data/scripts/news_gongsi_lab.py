@@ -110,6 +110,18 @@ def short(jcode, s, e, fam=None):  return call(f"/stock/{fam or fam_of(jcode)}/s
 def loan(jcode, s, e, fam=None):   return call(f"/stock/{fam or fam_of(jcode)}/loan_hist_info", jcode=jcode, sdate=s, edate=e)
 def credit(jcode, s, e, fam=None): return call(f"/stock/{fam or fam_of(jcode)}/credit_hist_info", jcode=jcode, sdate=s, edate=e)  # 신용융자잔고(F14076 금액=천원, F14074 잔고수량 등)
 
+def etf_premium(jcode, s, e, fam="m001"):
+    """ETF 괴리율(프리미엄/디스카운트) 시계열 = (종가 − NAV)/NAV.
+    hist_info의 일별 NAV(F15301=ETP지표가치)를 쓴다(국내 ETF는 이 일별 NAV가 정상 채워짐;
+    basic_info_all의 실시간 iNAV는 장외엔 0). 반환 [(date, 종가, NAV, 괴리율%)].
+    ※ 해외기초 ETF는 미국장 시차로 괴리가 크다(장중 실시간 괴리는 basic_info_all F15304)."""
+    out = []
+    for r in sorted(call(f"/stock/{fam}/hist_info", jcode=jcode, sdate=s, edate=e), key=lambda z: str(z.get("F12506"))):
+        px = to_f(r.get("F15001")); nav = to_f(r.get("F15301"))
+        out.append((str(r.get("F12506")), to_i(r.get("F15001")), nav,
+                    round((px-nav)/nav*100, 3) if nav else None))
+    return out
+
 def program(jcode, edate, fam=None):
     """종목별 프로그램매매 순매수(차익/비차익 분해, 거래량 주). jcode+edate(과거일 OK, 누계=일간 최종).
     반환: dict(net_vol 전체, arb_vol 차익, narb_vol 비차익). 전체=차익+비차익.
