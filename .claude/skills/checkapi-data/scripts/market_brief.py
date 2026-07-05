@@ -186,6 +186,26 @@ def money_rates(date: str) -> dict:
     return out
 
 
+# 해외 지수·환율 크로스 — economic/indicator(라이센스 무관). ※ 미국 다우/나스닥/S&P500은
+# 카탈로그 부재(ext/m184 라이센스 필요). 대만 TAIEX도 미확인.
+_OVERSEAS_IDX = [("니케이225", "JPNIKKEI225D"), ("상하이종합", "CNSHCOMPD"),
+                 ("항셍(HSI)", "HKHSID"), ("독일DAX", "DEDAXD"), ("유로스톡스50", "EASTOXX50D")]
+_FX_CROSS = [("달러-위안", "USDCNYTED"), ("달러-엔", "USDJPYTED"), ("유로-달러", "EURUSDTED")]
+
+def overseas_block(date: str) -> dict:
+    """해외 주가지수 + 환율 크로스 (economic, 라이센스 무관). KRX Brief '해외증시'·'위안/달러' 보완.
+    ※ economic/indicator는 전체 히스토리를 반환해 느리다(EOD 배치용). 미국 지수는 미제공."""
+    idx = {}
+    for lbl, code in _OVERSEAS_IDX:
+        v = _econ_latest(code, date)
+        if v: idx[lbl] = v
+    fx = {}
+    for lbl, code in _FX_CROSS:
+        v = _econ_latest(code, date)
+        if v: fx[lbl] = v
+    return {"index": idx, "fx": fx}
+
+
 def _econ_latest(check_code: str, date: str) -> tuple[float, str] | None:
     """경제지표(달러지수·WTI 등) — date 이하 최신 (DATA_VALUE, TIME). 갱신지연 있어 날짜 병기."""
     try:
@@ -302,7 +322,7 @@ def fmt_signed(v: float, unit: str = "", dp: int = 0) -> str:
 
 
 def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None,
-           macro: dict | None = None) -> str:
+           macro: dict | None = None, overseas: dict | None = None) -> str:
     dt = datetime.strptime(date, "%Y%m%d")
     lines = [f"[{dt.strftime('%Y-%m-%d')}({'월화수목금토일'[dt.weekday()]}) 장마감]  — CHECK API 재현", ""]
 
@@ -358,10 +378,21 @@ def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None,
         if cmdty:
             lines.append("  " + "  ".join(cmdty))
 
+    if overseas:
+        oi, ofx = overseas.get("index", {}), overseas.get("fx", {})
+        if oi or ofx:
+            lines.append("")
+            lines.append("▣ <해외 — 지수·환율 크로스 (economic, 라이센스 무관)>")
+            if oi:
+                lines.append("  " + "  ".join(f"{lbl} {v[0]:,.2f}" for lbl, v in oi.items()))
+            if ofx:
+                lines.append("  " + "  ".join(f"{lbl} {v[0]:,.2f}" for lbl, v in ofx.items()))
+            lines.append("  ※ 미국 다우/나스닥/S&P500·대만 TAIEX는 미제공(ext 라이센스 필요)")
+
     lines.append("")
     lines.append("▣ <미지원 — 외부 소스/구독 필요>")
-    lines.append("  위안/달러·Brent 유가: CHECK 범위 밖/구독(해외시세 패키지) 필요")
-    lines.append("  해외지수(니케이·상해·대만·홍콩): 해외시세 패키지 구독 시 재현 가능")
+    lines.append("  미국 지수(다우·나스닥·S&P500)·대만 TAIEX: economic 카탈로그 부재 → ext 라이센스 필요")
+    lines.append("  브렌트/두바이 현물 유가: CHECK 범위 밖 → 외부 소스(WTI는 재현됨)")
     return "\n".join(lines)
 
 
@@ -371,6 +402,7 @@ def main() -> None:
     ap.add_argument("date", nargs="?", help="조회일 YYYYMMDD (장마감/장개시 모드에 필요)")
     ap.add_argument("--open", metavar="HHMM", help="장개시 모드: 해당 시각 장중 스냅샷(예: 0901)")
     ap.add_argument("--live", action="store_true", help="실시간 모드: 현재값 스냅샷(intra_info, KRX300 포함)")
+    ap.add_argument("--overseas", action="store_true", help="해외 지수·환율크로스 포함(economic, 느림)")
     ap.add_argument("--json", action="store_true", help="원자료(dict)로 출력")
     args = ap.parse_args()
 
@@ -420,11 +452,17 @@ def main() -> None:
         macro = macro_block(args.date)
     except RuntimeError:
         macro = None
+    overseas = None
+    if args.overseas:
+        try:
+            overseas = overseas_block(args.date)
+        except RuntimeError:
+            overseas = None
     if args.json:
-        print(json.dumps({"date": args.date, "blocks": blocks, "futures": fut_blocks, "macro": macro},
-                         ensure_ascii=False, indent=2))
+        print(json.dumps({"date": args.date, "blocks": blocks, "futures": fut_blocks,
+                          "macro": macro, "overseas": overseas}, ensure_ascii=False, indent=2))
     else:
-        print(render(args.date, blocks, fut_blocks, macro))
+        print(render(args.date, blocks, fut_blocks, macro, overseas))
 
 
 if __name__ == "__main__":
