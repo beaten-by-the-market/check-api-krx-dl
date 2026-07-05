@@ -9,8 +9,10 @@ CHECK API의 과거 1분봉(`/stock/m00X/intra_date`, edate로 과거일 지정)
 - `intra_date` (1분봉): jcode + **edate(과거일 가능)**. 하루 ≈ 382봉(09:00 개장동시호가 ~ 15:30 종가).
   시간 F20004_02 = HHMMSSss (9010000=09:01, 15300000=15:30). OHLC=F20005~08_02, 분거래량 F20010_02.
 - `tick_info`(체결)·`intra_info`(10초봉)은 **당일(실시간)만** → 과거 조회 불가. 히스토리컬은 intra_date.
-- **넥스트레이드(NXT)**: 이 API엔 별도 NXT 체결 피드가 아직 없다(m222~m225 rank에 "NXT 활성화되면
-  반영" 조건부 언급만). → 탐지는 KRX 1분봉 기준. 거래소구분 필드도 없음.
+- **거래소별 패밀리(실측)**: m001/m003=KRX(코스피/코스닥) · **m222/m223=NXT(넥스트레이드)** ·
+  **m224/m225=통합(KRX+NXT)**. NXT/통합도 hoga_info·intra_date 등 동일 endpoint 세트 보유.
+  단 spec 메뉴에 state=off·"NXT 활성화되면 반영" 표기가 있어 **live 데이터 반환은 장중 실측 필요**.
+  flash 탐지 기본은 KRX(m001/m003)이나, NXT/통합 급변 비교로도 확장 가능(같은 종목의 거래소별 괴리).
 - 지수 1분봉: `/stock/m002/intra_date`(코스피, jcode="1") · `/stock/m004/intra_date`(코스닥) → 시장 동반 판단.
 - 시장 라우팅: KOSPI=m001, KOSDAQ=m003. **m001에 코스닥 코드를 넣으면 에러**(빈 결과 아님) → fam 힌트/폴백.
 - 반드시 등록 IP·샌드박스 밖에서 실행.
@@ -99,7 +101,7 @@ def index_series(fam, date):
     """(time_hhmm -> 지수종가) 맵. fam m001→코스피(1), m003→코스닥(2, m004패밀리)."""
     key = (fam, date)
     if key in _IDX_CACHE: return _IDX_CACHE[key]
-    ifam, jcode = ("m002", "1") if fam == "m001" else ("m004", "2")
+    ifam, jcode = ("m002", "1") if fam == "m001" else ("m004", "1")  # 종합지수=1 (코스닥도 "1")
     m = {}
     try:
         for r in call(f"/stock/{ifam}/intra_date", jcode=jcode, edate=date):
@@ -136,8 +138,8 @@ def explain_flash(jcode, date, fam=None, event=None, thresh=4.0):
     gong = []
     try:
         for g in call("/news/gongsi/gongsi_jong", jcode=jcode, sdate=date, edate=date, dcnt="50"):
-            ttl = str(g.get("F22002") or g.get("TITLE") or "").strip()
-            tm = str(g.get("F22004") or g.get("F30531") or "").strip()
+            ttl = str(g.get("TITLE") or "").strip()
+            tm = str(g.get("TIME") or "").strip()
             if ttl: gong.append((tm, ttl))
     except Exception:
         pass
@@ -154,19 +156,24 @@ def explain_flash(jcode, date, fam=None, event=None, thresh=4.0):
                 index_move=idxmove, disclosures=gong[:8], reason_tags=tags)
 
 # ---------------- 특정일 시장 스캔 ----------------
+# 통합/NXT fam → 감지용 KRX fam (유니버스는 통합 거래대금으로 뽑되, 감지는 검증된 KRX 1분봉으로)
+_KRX_OF = {"m224": "m001", "m225": "m003", "m222": "m001", "m223": "m003"}
+
 def flash_scan_day(date, codes=None, universe_top=40, thresh=4.0, market="both",
-                   worst_only=True):
+                   worst_only=True, detect_venue="krx"):
     """특정일, 유니버스에서 flash crash/spike가 있었던 종목 스캔.
-    codes=None이면 거래대금 상위(universe_top)를 유니버스로. 반환: 이벤트 있는 종목만."""
+    codes=None이면 **통합 거래대금 상위**(NXT 포함, 정확)를 유니버스로. flash 감지는 기본 KRX 1분봉
+    (detect_venue='unified'면 통합 1분봉으로 감지). 반환: 이벤트 있는 종목만."""
     if codes is None:
-        snap = [s for s in market_snapshot(fam=market) if s.get("amt", 0) > 0]
+        snap = [s for s in market_snapshot(fam=market) if s.get("amt", 0) > 0]  # 통합 기본
         snap.sort(key=lambda x: -x["amt"])
         uni = [(s["code"], s["name"], s["fam"]) for s in snap[:universe_top]]
     else:
         uni = [(c, "", None) if isinstance(c, str) else c for c in codes]
     out = []
     for code, nm, fam in uni:
-        fam, bars, evs = flash_moves(code, date, fam, thresh=thresh)
+        dfam = fam if detect_venue == "unified" else _KRX_OF.get(fam, fam)  # 감지용 거래소
+        fam, bars, evs = flash_moves(code, date, dfam, thresh=thresh)
         if not evs: continue
         if not nm:
             nm = code

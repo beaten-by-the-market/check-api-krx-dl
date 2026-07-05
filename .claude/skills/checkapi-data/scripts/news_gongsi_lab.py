@@ -239,20 +239,33 @@ _ETP_TOK = ['ETF','ETN','KODEX','TIGER','KBSTAR','ARIRANG','ACE','SOL ','PLUS ',
 def _is_etp(name: str) -> bool:
     return any(tok in name for tok in _ETP_TOK)
 
-def market_snapshot(fam="both", exclude_etp=True):
+# 거래소×시장 → 패밀리. NXT(2025 출범)로 같은 종목이 KRX·NXT 두 곳에서 거래된다.
+#   통합 = KRX+NXT 합산(실질 시장활동). KRX-only rank는 거래대금/거래량을 ~30~45% 과소집계한다
+#   (실측: 삼성 2026-07-03 KRX 94,548억 vs 통합 171,835억). 그래서 시세 스냅샷 기본은 '통합'.
+_VEN_FAM = {"krx":     {"kospi": "m001", "kosdaq": "m003"},
+            "nxt":     {"kospi": "m222", "kosdaq": "m223"},
+            "unified": {"kospi": "m224", "kosdaq": "m225"}}
+_MKT_SCOPE = {"both": ["kospi", "kosdaq"], "kospi": ["kospi"], "kosdaq": ["kosdaq"],
+              "m001": ["kospi"], "m003": ["kosdaq"]}   # 하위호환: 옛 fam 값도 허용
+_KRX_OF = {"m224": "m001", "m225": "m003", "m222": "m001", "m223": "m003",
+           "m001": "m001", "m003": "m003"}             # 통합/NXT fam → KRX fam (규제데이터 라우팅용)
+
+def market_snapshot(fam="both", exclude_etp=True, venue="unified"):
     """현재(최신 거래일) 전체 종목 시세 스냅샷. rank는 날짜 파라미터가 없어 '오늘'만 된다.
-    반환: [{code,name,fam,price,prev,ret,vol,amt,mktcap}]  (ret%=(현재가-전일종가)/전일종가)
-    거래대금(F15023)로 정렬 호출하나 등락률/거래량 필드도 함께 와서 재정렬 가능."""
-    fams = ["m001", "m003"] if fam == "both" else [fam]
+    venue='unified'(기본)=KRX+NXT 통합 · 'krx'=공식 · 'nxt'=NXT만.
+    ⚠ 통합/NXT의 price·ret은 실질 마지막체결(NXT 연장 포함) 기준 → 공식 종가/등락률은 venue='krx'.
+    반환: [{code,name,fam,market,venue,price,prev,ret,vol,amt,mktcap}]  (rank엔 F15004 없어 ret은 재계산)"""
     out = []
-    for fm in fams:
-        for r in call(f"/stock/{fm}/rank", up_code="1", criteria_code="F15023"):
+    for mk in _MKT_SCOPE.get(fam, ["kospi", "kosdaq"]):
+        fm = _VEN_FAM[venue][mk]
+        kw = {"up_code": "1"} if venue == "krx" else {}   # 통합/NXT는 up_code 선택
+        for r in call(f"/stock/{fm}/rank", criteria_code="F15023", **kw):
             name = str(r.get("F16002", "")).strip()
             if exclude_etp and _is_etp(name):
                 continue
             price, prev = to_i(r.get("F15001")), to_i(r.get("F03003"))
             out.append({"code": str(r.get("F16013", "")).strip(), "name": name, "fam": fm,
-                        "price": price, "prev": prev,
+                        "market": mk, "venue": venue, "price": price, "prev": prev,
                         "ret": round((price/prev-1)*100, 2) if prev else 0.0,
                         "vol": to_i(r.get("F15015")), "amt": to_i(r.get("F15023")),
                         "mktcap": to_i(r.get("F15028"))})

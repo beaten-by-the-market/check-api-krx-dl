@@ -91,13 +91,21 @@ def sec_index(date: str) -> dict:
     if not r:
         return {}
     x = r[0]
-    return {
+    out = {
         "close": _n(x.get("F15001")), "chg": _n(x.get("F15472")), "chg_pct": _n(x.get("F15004")),
         "vol_eok": _n(x.get("F15015")) / 1e5,        # 천주 -> 억주
-        "amt_jo": _n(x.get("F15023")) / 1e6,         # 백만원 -> 조원
+        "amt_jo": _n(x.get("F15023")) / 1e6,         # 백만원 -> 조원 (KRX)
         "cap_jo": _n(x.get("F15028")) / 1e12,        # 원 -> 조원
         "short_eok": _n(x.get("F33095")) / 1e8,      # 공매도거래대금(원) -> 억원
     }
+    # 통합(KRX+NXT) 코스닥 거래대금 병기 — m229 hist_info(거래대금·거래량만). 지수값·등락률은 KRX.
+    try:
+        u = post("/stock/m229/hist_info", jcode=KOSDAQ, sdate=date, edate=date)
+        if u:
+            out["amt_unified_jo"] = _n(u[0].get("F15023")) / 1e6
+    except Exception:
+        pass
+    return out
 
 
 def sec_investor(date: str) -> dict:
@@ -217,8 +225,11 @@ def main() -> None:
 
     L = [f"[코스닥시장 일일동향 {args.date[:4]}.{args.date[4:6]}.{args.date[6:]}] — CHECK API 재현", ""]
     if idx:
+        amt_txt = f"거래대금 {idx['amt_jo']:.1f}조"
+        if idx.get("amt_unified_jo") is not None:
+            amt_txt += f" [통합 {idx['amt_unified_jo']:.1f}조]"   # KRX+NXT
         L.append(f"▣ 지수  {idx['close']:,.2f}p {sign(idx['chg'], 2)}p ({sign(idx['chg_pct'], 2, '%')})"
-                 f"   거래량 {idx['vol_eok']:.1f}억주  거래대금 {idx['amt_jo']:.1f}조  시총 {idx['cap_jo']:.2f}조")
+                 f"   거래량 {idx['vol_eok']:.1f}억주  {amt_txt}  시총 {idx['cap_jo']:.2f}조")
     if inv:
         parts = "  ".join(f"{k} {sign(v)}" for k, v in inv.items())
         L.append(f"▣ 투자자(억원)  {parts}")

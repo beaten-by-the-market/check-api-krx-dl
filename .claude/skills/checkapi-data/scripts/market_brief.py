@@ -32,6 +32,8 @@ INDICES = [
     {"label": "KOSDAQ", "family": "m004", "code": "1"},   # m004=코스닥 지수, 종합=1
     {"label": "KRX300", "family": "m167", "code": "300"}, # m167=KRX 통합지수, KRX300=300
 ]
+# KRX 지수패밀리 → 통합(KRX+NXT) 지수패밀리 (거래대금·거래량만; 지수값·등락률은 KRX). m167(KRX300)은 NXT 대응 없음.
+_UNI_IDX = {"m002": "m228", "m004": "m229"}
 
 # 투자자 순매수 거래대금 F-code (references/investor-codes.md): 외국인=11, 기관=8, 개인=10
 INVESTOR = {"외국인": "F06511_11", "기관": "F06511_08", "개인": "F06511_10"}
@@ -79,14 +81,24 @@ def index_block(idx: dict, date: str) -> dict:
         return {"label": idx["label"], "missing": True}
     cur = rows[0]
     prev_amt = _num(rows[1].get("F15023")) if len(rows) > 1 else None
-    amt = _num(cur.get("F15023"))  # 거래대금(백만원)
+    amt = _num(cur.get("F15023"))  # 거래대금(백만원, KRX)
     out = {
         "label": idx["label"],
-        "close": _num(cur.get("F15001")),      # 현재가(지수)
-        "chg_pct": _num(cur.get("F15004")),    # 등락율
-        "amount_jo": amt / 1_000_000,          # 백만원 -> 조원
+        "close": _num(cur.get("F15001")),      # 현재가(지수) — KRX 공식
+        "chg_pct": _num(cur.get("F15004")),    # 등락율 — KRX 공식
+        "amount_jo": amt / 1_000_000,          # 백만원 -> 조원 (KRX 재현)
         "amount_delta_jo": (amt - prev_amt) / 1_000_000 if prev_amt is not None else None,
     }
+    # 통합(KRX+NXT) 거래대금 병기. 통합 지수패밀리(m228/m229)는 거래대금·거래량만(지수값·등락률 없음).
+    uni_fam = _UNI_IDX.get(idx["family"])
+    if uni_fam:
+        try:
+            ur = [r for r in post(f"/stock/{uni_fam}/hist_info", jcode=idx["code"], sdate=start, edate=date)
+                  if str(r.get("F12506")) == date]
+            if ur:
+                out["amount_unified_jo"] = _num(ur[0].get("F15023")) / 1_000_000
+        except RuntimeError:
+            pass
     # 시장 투자자 순매수(억원). 일부 지수(KRX300=m167 등)엔 없으므로 실패해도 넘어간다.
     try:
         inv = post(f"/stock/{idx['family']}/invest_hist_info", jcode=idx["code"], sdate=date, edate=date)
@@ -209,6 +221,8 @@ def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None) 
         amt = f"{b['amount_jo']:.1f}조"
         if b["amount_delta_jo"] is not None:
             amt += f" (전일 {fmt_signed(b['amount_delta_jo'], '조', 1)})"
+        if b.get("amount_unified_jo") is not None:
+            amt += f" [통합 {b['amount_unified_jo']:.1f}조]"   # KRX+NXT
         lines.append(f"  {b['label']:<7}{b['close']:>9,.2f}p ({fmt_signed(b['chg_pct'], '%', 2)})   거래 {amt}")
 
     if fut_blocks:
