@@ -121,6 +121,25 @@ def mass_trades(jcode, s, e, fam=None):
         out.append((str(r.get("F12506")), tot, mass, aft, round(mass/tot*100, 1) if tot else 0.0))
     return out
 
+def mass_screen(sdate, edate, market="kospi", top=15, exclude_etp=True):
+    """기간 대량매매(블록딜) 상위 종목 스크리너(rank_mass_date, criteria F33368).
+    대량합 = 장전시간외대량(F30601)+장중대량(F30696)+장마감시간외대량(F15085).
+    ※ rank는 종목명이 비고 ETF가 상위를 뒤덮으므로 market_snapshot 이름맵+ETP필터.
+    반환 [{code,name,mass_vol,aftmkt_vol}] 대량합 내림차순."""
+    fam = {"kospi": "m001", "kosdaq": "m003"}.get(market, market)
+    names = {s["code"]: s["name"] for s in market_snapshot(fam=market, exclude_etp=False, venue="krx")}
+    rows = call(f"/stock/{fam}/rank_mass_date", criteria_code="F33368", sdate=sdate, edate=edate)
+    out = []
+    for r in rows:
+        code = str(r.get("F16013", "")).strip()
+        nm = names.get(code) or code
+        if exclude_etp and _is_etp(nm):
+            continue
+        mv = to_i(r.get("F30601")) + to_i(r.get("F30696")) + to_i(r.get("F15085"))
+        out.append({"code": code, "name": nm, "mass_vol": mv, "aftmkt_vol": to_i(r.get("F15085"))})
+    out.sort(key=lambda x: -x["mass_vol"])
+    return out[:top]
+
 def flow_trend(jcode, s, e, fam=None):
     """종목 투자자 수급 추이 — 외국인/기관/개인 일별 순매수(주) + 기간누적 + 외국인 연속방향.
     반환 dict(rows=[(date, 외국인, 기관, 개인)], cum={외국인,기관,개인}, foreign_streak(+연속매수/-연속매도))."""

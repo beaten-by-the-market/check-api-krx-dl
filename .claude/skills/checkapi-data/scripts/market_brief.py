@@ -166,6 +166,26 @@ def yield_curve(date: str, maturities=("2", "3", "5", "10", "20", "30", "50")) -
     return {m: y for m in maturities if (y := _ktb_yield(date, m)) is not None}
 
 
+def money_rates(date: str) -> dict:
+    """초단기 자금시장 금리 — 콜금리(익일물, bond/m056 jcode=0000 F15192)·RP 전체(bond/m043).
+    반환 dict(call, rp). ※ RP는 PERIOD_TYPE(만기구분)에 범례가 없어 '전체' 근사만 신뢰;
+    콜금리는 전체통합(0000)이 깔끔. 국고채 곡선의 '초단기 끝'으로 쓴다."""
+    out = {}
+    try:
+        r = [x for x in post("/bond/m056/hist_info", jcode="0000", sdate=date, edate=date)]
+        if r: out["call"] = _num(r[0].get("F15192"))
+    except RuntimeError:
+        pass
+    try:
+        rp = post("/bond/m043/hist_info", inst_cd="0", dwm_type="1", sdate=date, edate=date)
+        # PERIOD_TYPE 1000/0 ≈ 전체/익일물 (범례 부재 → 최빈 근처값)
+        vals = [_num(x.get("AVG_RATE")) for x in rp if x.get("PERIOD_TYPE") in (0, 1000)]
+        if vals: out["rp"] = round(sum(vals) / len(vals), 3)
+    except RuntimeError:
+        pass
+    return out
+
+
 def _econ_latest(check_code: str, date: str) -> tuple[float, str] | None:
     """경제지표(달러지수·WTI 등) — date 이하 최신 (DATA_VALUE, TIME). 갱신지연 있어 날짜 병기."""
     try:
