@@ -160,6 +160,12 @@ def _ktb_yield(date: str, maturity: str) -> float | None:
     return best
 
 
+def yield_curve(date: str, maturities=("2", "3", "5", "10", "20", "30", "50")) -> dict:
+    """국고채 지표금리 수익률곡선 {만기(년): 금리%} — jipyo_list(그날 지표물)+m038.
+    만기별로 명목 지표물을 max(F15175)로 골라 물가채를 배제(실측). 10-2/30-3 스프레드 계산용."""
+    return {m: y for m in maturities if (y := _ktb_yield(date, m)) is not None}
+
+
 def _econ_latest(check_code: str, date: str) -> tuple[float, str] | None:
     """경제지표(달러지수·WTI 등) — date 이하 최신 (DATA_VALUE, TIME). 갱신지연 있어 날짜 병기."""
     try:

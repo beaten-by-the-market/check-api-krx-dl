@@ -110,6 +110,30 @@ def short(jcode, s, e, fam=None):  return call(f"/stock/{fam or fam_of(jcode)}/s
 def loan(jcode, s, e, fam=None):   return call(f"/stock/{fam or fam_of(jcode)}/loan_hist_info", jcode=jcode, sdate=s, edate=e)
 def credit(jcode, s, e, fam=None): return call(f"/stock/{fam or fam_of(jcode)}/credit_hist_info", jcode=jcode, sdate=s, edate=e)  # 신용융자잔고(F14076 금액=천원, F14074 잔고수량 등)
 
+def mass_trades(jcode, s, e, fam=None):
+    """종목 대량매매(블록딜·대량체결) 일별 — 시간대별 대량거래량 + 대량비중.
+    반환 [(date, 전체거래량, 대량합(바스켓포함 F30972), 장마감시간외대량 F15085, 대량비중%)].
+    큰 비중일 = 블록딜/기관 대량매매 정황(장마감 시간외 대량이 크면 블록딜 성격)."""
+    out = []
+    for r in sorted(call(f"/stock/{fam or fam_of(jcode)}/mass_hist_info", jcode=jcode, sdate=s, edate=e),
+                    key=lambda z: str(z.get("F12506"))):
+        tot = to_i(r.get("F15015")); mass = to_i(r.get("F30972")); aft = to_i(r.get("F15085"))
+        out.append((str(r.get("F12506")), tot, mass, aft, round(mass/tot*100, 1) if tot else 0.0))
+    return out
+
+def flow_trend(jcode, s, e, fam=None):
+    """종목 투자자 수급 추이 — 외국인/기관/개인 일별 순매수(주) + 기간누적 + 외국인 연속방향.
+    반환 dict(rows=[(date, 외국인, 기관, 개인)], cum={외국인,기관,개인}, foreign_streak(+연속매수/-연속매도))."""
+    I = sorted(invest(jcode, s, e, fam), key=lambda z: str(z.get("F12506")))
+    rows = [(str(x.get("F12506")), to_i(x.get("F06508_11")), to_i(x.get("F06508_08")), to_i(x.get("F06508_10"))) for x in I]
+    cum = {"외국인": sum(r[1] for r in rows), "기관": sum(r[2] for r in rows), "개인": sum(r[3] for r in rows)}
+    streak = 0
+    for _, f, _i, _p in reversed(rows):     # 최근부터 외국인 순매수 부호 연속
+        if f > 0 and streak >= 0: streak += 1
+        elif f < 0 and streak <= 0: streak -= 1
+        else: break
+    return {"jcode": jcode, "rows": rows, "cum": cum, "foreign_streak": streak}
+
 def etf_premium(jcode, s, e, fam="m001"):
     """ETF 괴리율(프리미엄/디스카운트) 시계열 = (종가 − NAV)/NAV.
     hist_info의 일별 NAV(F15301=ETP지표가치)를 쓴다(국내 ETF는 이 일별 NAV가 정상 채워짐;
