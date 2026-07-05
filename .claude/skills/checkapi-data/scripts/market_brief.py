@@ -186,10 +186,11 @@ def money_rates(date: str) -> dict:
     return out
 
 
-# 해외 지수·환율 크로스 — economic/indicator(라이센스 무관). ※ 미국 다우/나스닥/S&P500은
-# 카탈로그 부재(ext/m184 라이센스 필요). 대만 TAIEX도 미확인.
-_OVERSEAS_IDX = [("니케이225", "JPNIKKEI225D"), ("상하이종합", "CNSHCOMPD"),
-                 ("항셍(HSI)", "HKHSID"), ("독일DAX", "DEDAXD"), ("유로스톡스50", "EASTOXX50D")]
+# 해외 지수·환율 크로스 — economic/indicator(라이센스 무관). ※ economic에 없는 건 미국
+# **다우존스·나스닥** 뿐(ext/m184 라이센스 필요). S&P500·대만 가권은 economic에 있음(실측).
+_OVERSEAS_IDX = [("S&P500", "USSPX500D"), ("니케이225", "JPNIKKEI225D"), ("상하이종합", "CNSHCOMPD"),
+                 ("항셍(HSI)", "HKHSID"), ("대만가권", "TWTWSED"),
+                 ("독일DAX", "DEDAXD"), ("유로스톡스50", "EASTOXX50D")]
 _FX_CROSS = [("달러-위안", "USDCNYTED"), ("달러-엔", "USDJPYTED"), ("유로-달러", "EURUSDTED")]
 
 def overseas_block(date: str) -> dict:
@@ -387,11 +388,11 @@ def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None,
                 lines.append("  " + "  ".join(f"{lbl} {v[0]:,.2f}" for lbl, v in oi.items()))
             if ofx:
                 lines.append("  " + "  ".join(f"{lbl} {v[0]:,.2f}" for lbl, v in ofx.items()))
-            lines.append("  ※ 미국 다우/나스닥/S&P500·대만 TAIEX는 미제공(ext 라이센스 필요)")
+            lines.append("  ※ 미국 다우존스·나스닥만 미제공(ext 라이센스 필요; S&P500·대만은 위에 포함)")
 
     lines.append("")
     lines.append("▣ <미지원 — 외부 소스/구독 필요>")
-    lines.append("  미국 지수(다우·나스닥·S&P500)·대만 TAIEX: economic 카탈로그 부재 → ext 라이센스 필요")
+    lines.append("  미국 다우존스·나스닥: economic 카탈로그 부재 → ext 라이센스 필요")
     lines.append("  브렌트/두바이 현물 유가: CHECK 범위 밖 → 외부 소스(WTI는 재현됨)")
     return "\n".join(lines)
 
