@@ -110,6 +110,17 @@ def short(jcode, s, e, fam=None):  return call(f"/stock/{fam or fam_of(jcode)}/s
 def loan(jcode, s, e, fam=None):   return call(f"/stock/{fam or fam_of(jcode)}/loan_hist_info", jcode=jcode, sdate=s, edate=e)
 def credit(jcode, s, e, fam=None): return call(f"/stock/{fam or fam_of(jcode)}/credit_hist_info", jcode=jcode, sdate=s, edate=e)  # 신용융자잔고(F14076 금액=천원, F14074 잔고수량 등)
 
+def program(jcode, edate, fam=None):
+    """종목별 프로그램매매 순매수(차익/비차익 분해, 거래량 주). jcode+edate(과거일 OK, 누계=일간 최종).
+    반환: dict(net_vol 전체, arb_vol 차익, narb_vol 비차익). 전체=차익+비차익.
+    (차익=선물 베이시스 노린 지수차익거래, 비차익=바스켓 방향성 매매.)
+    ※ 금액 필드(F21553/F21559)는 실측상 값이 비정상이라 거래량(주)만 반환한다."""
+    r = call(f"/stock/{fam or fam_of(jcode)}/program", jcode=jcode, edate=edate)
+    if not r: return {"jcode": jcode, "edate": edate, "empty": True}
+    x = r[0]
+    return {"jcode": jcode, "edate": str(x.get("F12506") or edate),
+            "net_vol": to_i(x.get("F21544")), "arb_vol": to_i(x.get("F21550")), "narb_vol": to_i(x.get("F21556"))}
+
 # ---------------- 공시 / 뉴스 ----------------
 def gongsi_day(s, e, dcnt=20000):        return call("/news/gongsi/gongsi_basic", sdate=s, edate=e, dcnt=str(dcnt))
 def gongsi_stock(jcode, s, e, dcnt=500): return call("/news/gongsi/gongsi_jong", jcode=jcode, sdate=s, edate=e, dcnt=str(dcnt))
