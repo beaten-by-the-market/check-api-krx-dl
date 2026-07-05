@@ -83,7 +83,9 @@ python .claude/skills/checkapi-data/scripts/search_endpoints.py 가상자산    
 4. **메뉴맵** — 사람이 보는 메뉴명↔패밀리(외국환중개·해외금리·해외환율 등) → `references/market-analysis.md`.
 
 4단계 모두 비면 그때 범위 밖(확정 부재: VI·VKOSPI·투자자예탁금·배당락/권리락·국내주식 배당/PER·
-**Brent/두바이 유가·투자주체별 공매도** — 상세 `references/market-analysis.md`). ※ 해외 주가지수·위안/달러는 구독(유형1)으로 가능.
+**Brent/두바이 유가·금/은/구리/천연가스·미국 다우/나스닥·투자주체별 공매도** — 상세 `references/market-analysis.md`).
+※ 해외 주가지수(S&P500·니케이·상하이·항셍·대만·DAX·유로스톡스)·위안/달러·각국 기준금리·미국 국채커브는
+**economic으로 라이센스 없이** 됨(구독 불필요). 금·VIX는 KRX 상장 ETF/ETN 프록시.
 
 **"없음"은 잠정 판정 — 근거가 오면 반드시 재탐색한다.** (이 스킬 개발 중 "없음"이라 했다가
 지수·원달러·과열·국채·US10년·WTI를 뒤늦게 찾은 게 6회+. "없음"은 절대 단정이 아니다.)

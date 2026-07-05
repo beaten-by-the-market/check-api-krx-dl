@@ -11,7 +11,8 @@
   · 환율·금리·유가는 사실 CHECK로 조회된다(정정): 원/달러 `bond/m023 00USDSP`(실측 1,525.6),
     국고채 지표금리 `bond/m058 jipyo_list`+`bond/m038` F15175(3Y 3.745, edate로 그날 지표물→과거일 OK),
     미국10Y `bond/m025 GBUS10Y`, 달러지수·WTI `etc/economic/indicator`. → 매크로 대시보드로 함께 볼 것.
-  · 진짜 범위 밖: 해외 주가지수(니케이·상해 등), 브렌트/두바이 현물 유가.
+  · 해외 지수·환율크로스·글로벌 금리는 economic으로 라이센스 없이 됨(--overseas / overseas_block·global_rates).
+  · 진짜 범위 밖: 미국 다우/나스닥 지수, 브렌트/두바이 현물 유가, 금/은/구리/천연가스·VIX(직접값).
   · KRX300 = m167 jcode 300(실측 확정) — INDICES에 포함돼 있고, NXT 대응 통합지수는 없다.
 """
 
@@ -237,7 +238,7 @@ def macro_block(date: str) -> dict:
     """KRX Brief '기타' 섹션 재현 — 금리·환율·유가 (전부 CHECK 실호출).
     원/달러(bond/m023), 국고채 3Y/10Y(bond/m058+m038), 미국10Y(bond/m025 GBUS10Y),
     달러지수·WTI(etc/economic). 실패 항목은 None으로 두고 렌더에서 건너뛴다.
-    ※ 위안/달러·Brent·해외지수는 CHECK 범위 밖/구독 필요 → 여기서 산출하지 않음."""
+    ※ 위안/달러·해외지수·글로벌 금리는 overseas_block()/global_rates()에서(--overseas). Brent만 CHECK 부재."""
     out: dict = {}
     try:
         r = post("/bond/m023/basic_info", jcode="00USDSP")
@@ -307,7 +308,7 @@ def render_live(snaps: list[dict]) -> str:
         else:
             lines.append(f"  {s['label']:<7}{s['close']:>9,.2f}p ({fmt_signed(s['chg_pct'], '%', 2)})")
     lines.append("")
-    lines.append("※ 장중 실행 시 현재가, 장 마감/휴장 시 최근 체결값. 환율·해외지수는 CHECK 범위 밖.")
+    lines.append("※ 장중 실행 시 현재가, 장 마감/휴장 시 최근 체결값. (환율·해외지수·글로벌금리는 장마감 모드 --overseas로)")
     return "\n".join(lines)
 
 
@@ -325,7 +326,7 @@ def render_open(date: str, snaps: list[dict], target: int) -> str:
     lines.append("▣ <미구현/미지원>")
     lines.append("  KOSPI200 예상시가·괴리율: 동시호가 선물 예상체결 기반 산식 필요(시황팀 공식) — 별도")
     lines.append("  장초반 수급(억원): CHECK는 장중 '누적수량'만(대금 별도 산출 필요)")
-    lines.append("  환율·해외지수: CHECK 범위 밖 → 외부 소스")
+    lines.append("  환율·해외지수·글로벌금리: 장마감 모드 --overseas로 재현(economic, 라이센스 무관)")
     return "\n".join(lines)
 
 
