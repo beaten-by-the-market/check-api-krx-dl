@@ -166,6 +166,17 @@ def yield_curve(date: str, maturities=("2", "3", "5", "10", "20", "30", "50")) -
     return {m: y for m in maturities if (y := _ktb_yield(date, m)) is not None}
 
 
+_POLICY_RATES = [("미국(Fed)", "USFEDRATED"), ("한국(한은)", "KRBOKRATED"),
+                 ("유럽(ECB)", "EAECBRATED"), ("일본(BOJ)", "JPBOJRATED")]
+_US_CURVE = [("3M", "USUST3MRD"), ("2Y", "USUST2YRD"), ("10Y", "USUST10YRD"), ("30Y", "USUST30YRD")]
+
+def global_rates(date: str) -> dict:
+    """글로벌 금리 — 각국 기준금리 + 미국 국채 커브 (economic, 라이센스 무관).
+    반환 dict(policy={국가:(금리,날짜)}, us_curve={만기:(금리,날짜)}).
+    ※ economic은 느림. 일부 만기(예 5Y)는 갱신 지연될 수 있어 날짜(TIME)를 함께 본다."""
+    return {"policy": {lbl: _econ_latest(c, date) for lbl, c in _POLICY_RATES},
+            "us_curve": {lbl: _econ_latest(c, date) for lbl, c in _US_CURVE}}
+
 def money_rates(date: str) -> dict:
     """초단기 자금시장 금리 — 콜금리(익일물, bond/m056 jcode=0000 F15192)·RP 전체(bond/m043).
     반환 dict(call, rp). ※ RP는 PERIOD_TYPE(만기구분)에 범례가 없어 '전체' 근사만 신뢰;
