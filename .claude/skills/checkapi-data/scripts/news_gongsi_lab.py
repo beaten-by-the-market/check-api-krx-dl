@@ -108,6 +108,7 @@ def hist(jcode, s, e, fam=None):   return call(f"/stock/{fam or fam_of(jcode)}/h
 def invest(jcode, s, e, fam=None): return call(f"/stock/{fam or fam_of(jcode)}/invest_hist", jcode=jcode, sdate=s, edate=e)
 def short(jcode, s, e, fam=None):  return call(f"/stock/{fam or fam_of(jcode)}/short_hist_info", jcode=jcode, sdate=s, edate=e)
 def loan(jcode, s, e, fam=None):   return call(f"/stock/{fam or fam_of(jcode)}/loan_hist_info", jcode=jcode, sdate=s, edate=e)
+def credit(jcode, s, e, fam=None): return call(f"/stock/{fam or fam_of(jcode)}/credit_hist_info", jcode=jcode, sdate=s, edate=e)  # 신용융자잔고(F14076 금액=천원, F14074 잔고수량 등)
 
 # ---------------- 공시 / 뉴스 ----------------
 def gongsi_day(s, e, dcnt=20000):        return call("/news/gongsi/gongsi_basic", sdate=s, edate=e, dcnt=str(dcnt))
