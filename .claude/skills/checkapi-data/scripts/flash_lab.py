@@ -98,7 +98,8 @@ def flash_moves(jcode, date, fam=None, thresh=4.0, rev_frac=0.5, rev_win=5,
 # ---------------- 지수(시장) 동반 여부 ----------------
 _IDX_CACHE = {}
 def index_series(fam, date):
-    """(time_hhmm -> 지수종가) 맵. fam m001→코스피(1), m003→코스닥(2, m004패밀리)."""
+    """(time_hhmm -> 지수종가) 맵. fam m001→코스피(m002 jcode=1), m003→코스닥(m004 jcode=1).
+    ※ 코스닥 종합 = m004 jcode="1"(실측 868.41). jcode="2"는 다른 지수(2209)이므로 쓰지 말 것."""
     key = (fam, date)
     if key in _IDX_CACHE: return _IDX_CACHE[key]
     ifam, jcode = ("m002", "1") if fam == "m001" else ("m004", "1")  # 종합지수=1 (코스닥도 "1")

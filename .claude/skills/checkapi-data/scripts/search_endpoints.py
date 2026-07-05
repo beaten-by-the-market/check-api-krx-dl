@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from _common import all_specs, domain_family, _force_utf8_stdout
+from _common import all_specs, domain_family, market_name, _force_utf8_stdout
 
 
 def score(spec: dict, tokens: list[str]) -> int:
@@ -28,16 +28,21 @@ def score(spec: dict, tokens: list[str]) -> int:
     res_desc = " ".join(r.get("desc", "") for r in spec.get("res", []))
     res_name = " ".join(r.get("name", "") for r in spec.get("res", []))
     params = " ".join(p.get("name", "") for p in spec.get("param", []))
+    mkt = market_name(apiurl)   # 시장명(예: '국채30년 선물', '가상자산') — 제목엔 없는 시장명 매칭용
 
     title_l, apiurl_l = title.lower(), apiurl.lower()
     res_desc_l, res_name_l, params_l = res_desc.lower(), res_name.lower(), params.lower()
-    dom_l, fam_l = dom.lower(), fam.lower()
+    dom_l, fam_l, mkt_l = dom.lower(), fam.lower(), mkt.lower()
 
     total = 0
     matched = 0
     for t in tokens:
         tl = t.lower()
         hit = False
+        if tl in mkt_l:
+            # 시장명 매칭은 강한 신호(제목이 일반명이라 시장명이 유일한 단서인 경우가 많음).
+            total += 3
+            hit = True
         if tl in title_l:
             total += 3
             hit = True
@@ -88,6 +93,7 @@ def main() -> None:
             "score": sc,
             "apiurl": s["apiurl"],
             "title": s.get("title", ""),
+            "market": market_name(s["apiurl"]),
             "domain": dom,
             "family": fam,
             "required": [p for p in req if p not in ("cust_id", "auth_key")],
@@ -106,8 +112,9 @@ def main() -> None:
     print(f"검색어: {' '.join(tokens) or '(도메인 목록)'}  |  후보 {len(rows)}개\n")
     for i, r in enumerate(rows, 1):
         extra = ", ".join(r["required"]) or "-"
+        mkt = f"  ◀ {r['market']}" if r.get("market") else ""
         print(f"{i:>2}. {r['apiurl']}")
-        print(f"     제목: {r['title']}  [{r['domain']}/{r['family']}]  응답필드 {r['res_count']}개")
+        print(f"     제목: {r['title']}  [{r['domain']}/{r['family']}]{mkt}  응답필드 {r['res_count']}개")
         print(f"     추가 필수 파라미터: {extra}")
     print("\n다음 단계: get_endpoint_spec.py <apiurl> 로 파라미터/응답형식을 확인하세요.")
 

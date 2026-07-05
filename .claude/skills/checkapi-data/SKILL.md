@@ -49,9 +49,17 @@ description: >
 ```bash
 python .claude/skills/checkapi-data/scripts/search_endpoints.py 일별 시세 주식
 python .claude/skills/checkapi-data/scripts/search_endpoints.py 외국인 순매수 --domain stock
+python .claude/skills/checkapi-data/scripts/search_endpoints.py 국채30년 선물   # 시장명 → future/m221
+python .claude/skills/checkapi-data/scripts/search_endpoints.py 가상자산        # 시장명 → ext/m215
 ```
 
-스크립트는 후보만 좁혀 준다. **어느 것이 의도에 맞는지는 결과(제목·응답필드 수·도메인)를
+**시장명으로도 검색된다(★ 제목이 전부 일반명이라 이게 중요).** `search_endpoints.py`는 시장명↔패밀리
+매핑(`_common.py`의 `MARKET_NAMES`, ground truth)을 내장해 `국채30년 선물`·`위클리옵션`·`가상자산`·
+`컨센서스`·`코넥스` 같은 **시장명을 바로 패밀리 코드로 해석**하고 결과에 `◀ 시장명`으로 표시한다.
+"도메인 경계 불일치"(가상자산=`/ext/m215`, 해외환율=`/ext/m174`)도 이 검색이 자동으로 넘겨준다.
+전체 시장명↔코드 룩업표는 `docs/checkapi/market-index.md`.
+
+스크립트는 후보만 좁혀 준다. **어느 것이 의도에 맞는지는 결과(제목·시장명·응답필드 수·도메인)를
 보고 판단**한다. 도메인 감: `stock` 주식, `future` 파생, `bond` 채권, `ext` 해외,
 `news` 뉴스/공시, `etc` 경제/기업/재무.
 

@@ -279,6 +279,40 @@ def screen_today(by="등락률", top=20, direction="top", exclude_etp=True, snap
     ordered = sorted(snap, key=lambda x: x[key], reverse=(direction == "top"))
     return ordered[:top]
 
+# 투자자 기간합산 순매수 스크리너 --------------------------------------------
+_INV_CRIT = {"외국인": "F06508_11", "기관": "F06508_08", "개인": "F06508_10",
+             "금융투자": "F06508_01", "투신": "F06508_03", "연기금": "F06508_06"}
+def investor_netbuy_screen(who="외국인", market="kospi", sdate=None, edate=None,
+                           top=15, exclude_etp=True, direction="top"):
+    """기간[sdate,edate] 투자자별 순매수 상위/하위 종목 스크리너(rank_invest_date).
+    who=외국인/기관/개인/금융투자/투신/연기금 → criteria F06508_NN(순매수거래량 기준).
+    ※ rank_invest_date는 종목명이 비어 오고 ETF·인버스가 상위를 뒤덮으므로, market_snapshot의
+      이름맵으로 종목명을 채우고 exclude_etp로 ETP를 거른다(순수 종목만).
+    반환: [{code,name,net_shares}] 순매수거래량 내림차순(direction='bottom'이면 순매도 상위)."""
+    crit = _INV_CRIT.get(who)
+    if not crit:
+        raise ValueError(f"who는 {list(_INV_CRIT)} 중 하나")
+    fam = {"kospi": "m001", "kosdaq": "m003"}.get(market, market)
+    if not (sdate and edate):
+        raise ValueError("sdate·edate(기간) 필수")
+    # 이름맵(ETP 포함 전체) — rank_invest_date가 F16002를 안 채워줌
+    names = {s["code"]: s["name"] for s in market_snapshot(
+        fam=market, exclude_etp=False, venue="krx")}
+    sort_code = "0" if direction == "top" else "1"   # 0=내림차순(순매수 상위)
+    rows = call(f"/stock/{fam}/rank_invest_date", criteria_code=crit,
+                sort_code=sort_code, sdate=sdate, edate=edate)
+    out = []
+    for r in rows:
+        code = str(r.get("F16013", "")).strip()
+        nm = names.get(code) or str(r.get("F16002", "")).strip() or code
+        if exclude_etp and _is_etp(nm):
+            continue
+        out.append({"code": code, "name": nm, "net_shares": to_i(r.get(crit))})
+        if len(out) >= top:
+            break
+    return out
+
+
 def period_metrics(jcode, s, e, fam=None):
     """기간 [s,e] 시세 파생지표. hist_info 기반(과거일 가능)."""
     fam = fam or fam_of(jcode)

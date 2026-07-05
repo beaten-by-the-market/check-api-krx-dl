@@ -7,10 +7,12 @@
 - **등록 IP 호스트에서, 샌드박스 밖으로 실행**할 것 (실호출).
 - 확정·검증된 부분: KOSPI/KOSDAQ 지수값·등락률·거래대금, 시장 단위 투자자 순매수(억원).
   (실측 대조: 2023-04-12 KOSPI 2550.64/+0.11%, KOSDAQ 890.62/-0.93%)
-- CHECK 범위 밖이라 재현 못 하는 부분은 출력에 명시한다:
-  · 환율(달러/원·달러/위안), 해외지수(니케이 등) → 외부 소스(한국은행 ECOS, 해외 데이터) 필요
-  · 국고채 3Y 지표금리 → 지표물 로테이션 때문에 정확 재현이 까다로워 여기선 생략(별도 처리 필요)
-  · KRX300 → 지수코드가 code_info에서 확인 안 됨(코드 확인되면 INDICES에 추가)
+- 이 브리프는 KRX 원본 재현에 집중해 국내 지수·선물·수급만 담는다. 아래는 참고:
+  · 환율·금리·유가는 사실 CHECK로 조회된다(정정): 원/달러 `bond/m023 00USDSP`(실측 1,525.6),
+    국고채 지표금리 `bond/m058 jipyo_list`+`bond/m038` F15175(3Y 3.745, edate로 그날 지표물→과거일 OK),
+    미국10Y `bond/m025 GBUS10Y`, 달러지수·WTI `etc/economic/indicator`. → 매크로 대시보드로 함께 볼 것.
+  · 진짜 범위 밖: 해외 주가지수(니케이·상해 등), 브렌트/두바이 현물 유가.
+  · KRX300 = m167 jcode 300(실측 확정) — INDICES에 포함돼 있고, NXT 대응 통합지수는 없다.
 """
 
 from __future__ import annotations
@@ -136,6 +138,70 @@ def futures_block(f: dict, date: str) -> dict:
     }
 
 
+def _ktb_yield(date: str, maturity: str) -> float | None:
+    """국고채 지표금리(%) — jipyo_list가 그날 만기별 지표물 ISIN을 주면 m038로 수익률 조회.
+    같은 만기에 명목·물가채가 섞여 나올 수 있어(물가채 실질수익률이 훨씬 낮음) 명목 지표물을
+    max(F15175)로 고른다(실측: 만기10 = 물가 1.560 vs 명목 4.168 → 4.168 채택)."""
+    try:
+        jl = post("/bond/m058/jipyo_list", edate=date)
+    except RuntimeError:
+        return None
+    isins = [str(r.get("F16013")) for r in jl if str(r.get("F14131")) == str(maturity)]
+    best = None
+    for isin in isins:
+        try:
+            y = post("/bond/m038/hist_info", jcode=isin, sdate=date, edate=date)
+        except RuntimeError:
+            continue
+        if y:
+            v = _num(y[0].get("F15175"))
+            if v and (best is None or v > best):
+                best = v
+    return best
+
+
+def _econ_latest(check_code: str, date: str) -> tuple[float, str] | None:
+    """경제지표(달러지수·WTI 등) — date 이하 최신 (DATA_VALUE, TIME). 갱신지연 있어 날짜 병기."""
+    try:
+        rows = post("/etc/economic/indicator", check_code=check_code)
+    except RuntimeError:
+        return None
+    cand = sorted((r for r in rows if str(r.get("TIME", "")) <= date), key=lambda r: str(r.get("TIME")))
+    if not cand:
+        cand = sorted(rows, key=lambda r: str(r.get("TIME", "")))
+    if not cand:
+        return None
+    last = cand[-1]
+    return _num(last.get("DATA_VALUE")), str(last.get("TIME", ""))
+
+
+def macro_block(date: str) -> dict:
+    """KRX Brief '기타' 섹션 재현 — 금리·환율·유가 (전부 CHECK 실호출).
+    원/달러(bond/m023), 국고채 3Y/10Y(bond/m058+m038), 미국10Y(bond/m025 GBUS10Y),
+    달러지수·WTI(etc/economic). 실패 항목은 None으로 두고 렌더에서 건너뛴다.
+    ※ 위안/달러·Brent·해외지수는 CHECK 범위 밖/구독 필요 → 여기서 산출하지 않음."""
+    out: dict = {}
+    try:
+        r = post("/bond/m023/basic_info", jcode="00USDSP")
+        if r:
+            out["usdkrw"] = _num(r[0].get("F15001"))       # 현재가(spot)
+            out["usdkrw_base"] = _num(r[0].get("F15183"))  # 당일 매매기준율
+    except RuntimeError:
+        pass
+    out["ktb3y"] = _ktb_yield(date, "3")
+    out["ktb10y"] = _ktb_yield(date, "10")
+    try:
+        r = post("/bond/m025/hist_info", jcode="GBUS10Y", sdate=date, edate=date)
+        out["us10y"] = _num(r[0].get("F32450")) if r else None
+    except RuntimeError:
+        out["us10y"] = None
+    dxy = _econ_latest("USDXYD", date)
+    wti = _econ_latest("USCOMCL1D", date)
+    out["dxy"], out["dxy_time"] = (dxy[0], dxy[1]) if dxy else (None, None)
+    out["wti"], out["wti_time"] = (wti[0], wti[1]) if wti else (None, None)
+    return out
+
+
 def open_snapshot(idx: dict, date: str, target: int) -> dict:
     """장중 지수 스냅샷: intra_date(1분)에서 target 시각(HMMSSss) 이상 첫 값.
     KRX300(m167)은 intra_date가 없어 미지원."""
@@ -209,7 +275,8 @@ def fmt_signed(v: float, unit: str = "", dp: int = 0) -> str:
     return f"{v:+,.{dp}f}{unit}"
 
 
-def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None) -> str:
+def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None,
+           macro: dict | None = None) -> str:
     dt = datetime.strptime(date, "%Y%m%d")
     lines = [f"[{dt.strftime('%Y-%m-%d')}({'월화수목금토일'[dt.weekday()]}) 장마감]  — CHECK API 재현", ""]
 
@@ -247,11 +314,28 @@ def render(date: str, blocks: list[dict], fut_blocks: list[dict] | None = None) 
         parts = "  ".join(f"({k}) {fmt_signed(v, '', 0)}" for k, v in f.items())
         lines.append(f"  {b['label']:<7}: {parts}")
 
+    if macro:
+        lines.append("")
+        lines.append("▣ <기타 — 금리·환율·유가 (CHECK 실호출)>")
+        if macro.get("usdkrw"):
+            base = f" (기준율 {macro['usdkrw_base']:,.1f})" if macro.get("usdkrw_base") else ""
+            lines.append(f"  원/달러   {macro['usdkrw']:,.1f}{base}")
+        rates = []
+        if macro.get("ktb3y") is not None:  rates.append(f"국채3년 {macro['ktb3y']:.3f}%")
+        if macro.get("ktb10y") is not None: rates.append(f"국채10년 {macro['ktb10y']:.3f}%")
+        if macro.get("us10y") is not None:  rates.append(f"US10년 {macro['us10y']:.3f}%")
+        if rates:
+            lines.append("  " + "  ".join(rates))
+        cmdty = []
+        if macro.get("dxy") is not None: cmdty.append(f"달러지수 {macro['dxy']:.2f}" + (f"({macro['dxy_time']})" if macro.get("dxy_time") else ""))
+        if macro.get("wti") is not None: cmdty.append(f"WTI ${macro['wti']:.2f}" + (f"({macro['wti_time']})" if macro.get("wti_time") else ""))
+        if cmdty:
+            lines.append("  " + "  ".join(cmdty))
+
     lines.append("")
-    lines.append("▣ <미지원 — 외부 소스 필요 (CHECK 범위 밖/미확정)>")
-    lines.append("  국고채 3Y: 지표물 로테이션으로 정확 재현 어려움(별도 처리)")
-    lines.append("  달러/원·달러/위안(FX): CHECK 범위 밖 → 한국은행 ECOS 등")
-    lines.append("  해외지수(니케이·상해·대만·홍콩): CHECK 범위 밖 → 별도 해외 데이터")
+    lines.append("▣ <미지원 — 외부 소스/구독 필요>")
+    lines.append("  위안/달러·Brent 유가: CHECK 범위 밖/구독(해외시세 패키지) 필요")
+    lines.append("  해외지수(니케이·상해·대만·홍콩): 해외시세 패키지 구독 시 재현 가능")
     return "\n".join(lines)
 
 
@@ -306,10 +390,15 @@ def main() -> None:
             fut_blocks.append(futures_block(f, args.date))
         except RuntimeError as e:
             fut_blocks.append({"label": f["label"], "missing": True, "error": str(e)})
+    try:
+        macro = macro_block(args.date)
+    except RuntimeError:
+        macro = None
     if args.json:
-        print(json.dumps({"date": args.date, "blocks": blocks, "futures": fut_blocks}, ensure_ascii=False, indent=2))
+        print(json.dumps({"date": args.date, "blocks": blocks, "futures": fut_blocks, "macro": macro},
+                         ensure_ascii=False, indent=2))
     else:
-        print(render(args.date, blocks, fut_blocks))
+        print(render(args.date, blocks, fut_blocks, macro))
 
 
 if __name__ == "__main__":

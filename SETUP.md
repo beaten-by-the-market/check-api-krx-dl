@@ -61,8 +61,17 @@ python .claude/skills/checkapi-data/scripts/cache_codes.py
 | Python / Claude Code | ❌ | 설치 |
 | 코드 캐시(`search_codes`용) | ❌ | `cache_codes.py` 1회 |
 | 등록 IP | — | 같은 네트워크 확인(`verify_checkapi.py`) |
+| 드리프트 훅(사람 커밋용) | ✅(`.githooks/`) | (선택) `git config core.hooksPath .githooks` 1회 |
 
 → **`git pull` + `.env` 생성 + (선택) 캐시 1회** 면 새 PC에서 완전히 동작한다.
+
+### 시장명 매핑 드리프트 검사 (git 훅)
+시장명↔코드 매핑은 런타임 소스 `scripts/_common.py`의 `MARKET_NAMES`와 사람용 문서
+`docs/checkapi/market-index.md` 두 곳에 있다. 어긋나면(예: MARKET_NAMES에 패밀리를 추가하고
+문서 반영을 빠뜨림) `.githooks/pre-commit`이 `check_market_index.py`로 검사해 **커밋을 막는다**
+(사람·Claude 커밋 모두 `git commit`을 거치므로 함께 잡힌다).
+- **활성화(클론마다 1회)**: `git config core.hooksPath .githooks`
+- 수동 확인: `python .claude/skills/checkapi-data/scripts/check_market_index.py`
 
 ---
 

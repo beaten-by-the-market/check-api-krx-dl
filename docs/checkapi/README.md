@@ -44,7 +44,8 @@ cust_id=...&auth_key=...&jcode=...
 ## 문서 읽는 순서
 
 1. [quickstart.md](quickstart.md): raw API 호출 방식
-2. [endpoint-catalog.md](endpoint-catalog.md): 전체 endpoint 한눈에 보기
-3. [domains/](domains/): 도메인별 상세 목록
-4. [recipes.md](recipes.md): 데이터 조회 목적별 예시
-5. [errors.md](errors.md): 에러 처리
+2. [market-index.md](market-index.md): **시장명 → 코드(mXXX) 룩업** (국채30년선물·컨센서스·가상자산 등을 시장명으로 찾기 + ⚠도메인경계 3건)
+3. [endpoint-catalog.md](endpoint-catalog.md): 전체 endpoint 한눈에 보기
+4. [domains/](domains/): 도메인별 상세 목록
+5. [recipes.md](recipes.md): 데이터 조회 목적별 예시
+6. [errors.md](errors.md): 에러 처리

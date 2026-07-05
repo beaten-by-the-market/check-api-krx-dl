@@ -1,0 +1,10 @@
+#!/bin/sh
+# 시장명 매핑 드리프트 검사: _common.MARKET_NAMES <-> docs/checkapi/market-index.md
+# (사람 git commit도 잡는 층. Claude 커밋은 .claude/settings.json PreToolUse 훅이 잡는다.)
+# 활성화(클론마다 1회):  git config core.hooksPath .githooks
+python .claude/skills/checkapi-data/scripts/check_market_index.py
+if [ $? -ne 0 ]; then
+  echo "" >&2
+  echo "커밋 차단: 위 시장명 매핑 드리프트를 해소한 뒤 다시 커밋하세요." >&2
+  exit 1
+fi

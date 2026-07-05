@@ -87,6 +87,68 @@ def domain_family(apiurl: str) -> tuple[str, str]:
     return dom, fam
 
 
+# ── 시장명 ↔ 패밀리(domain/family) 매핑 (ground truth: specs menus[], 지수/KONEX/경계는 code_info 실측) ──
+# endpoint 제목은 전부 일반명(기본정보/일별정보)이라, "국채30년 선물"·"가상자산"·"컨센서스" 같은
+# 시장명으로는 검색이 안 잡힌다. 이 표로 search_endpoints가 시장명→패밀리를 해석한다.
+# 상세 룩업/도메인경계 주석은 docs/checkapi/market-index.md (사람용 문서).
+# ⚙ 이 dict가 단일 런타임 소스다. 여기에 항목을 추가하면 docs/checkapi/market-index.md에도
+#   반드시 반영해야 한다 — 안 하면 check_market_index.py(pre-commit 훅)가 커밋을 막는다.
+MARKET_NAMES: dict[str, str] = {
+    # stock (KRX/NXT/통합)
+    "stock/m001": "거래소 코스피 종목", "stock/m002": "거래소 코스피 업종 지수",
+    "stock/m003": "코스닥 종목", "stock/m004": "코스닥 업종 지수",
+    "stock/m222": "NXT 코스피 종목", "stock/m226": "NXT 코스피 업종",
+    "stock/m223": "NXT 코스닥 종목", "stock/m227": "NXT 코스닥 업종",
+    "stock/m224": "통합 코스피 종목", "stock/m228": "통합 코스피 업종 지수",
+    "stock/m225": "통합 코스닥 종목", "stock/m229": "통합 코스닥 업종 지수",
+    "stock/m008": "수익증권", "stock/m009": "신주인수권", "stock/m010": "OTCBB",
+    "stock/m118": "KONEX 코넥스 종목", "stock/m121": "KONEX 코넥스 업종 지수",
+    "stock/m167": "섹터지수 KRX100 KRX300 KTOP30 코리아밸류업 KRX섹터 테마지수",
+    "stock/m168": "국내기타지수 코스피200 TR 레버리지 인버스 커버드콜 리츠 전략지수",
+    # future (파생)
+    "future/m005": "KOSPI200 선물", "future/m236": "KOSPI200 선물 야간",
+    "future/m006": "KOSPI200 옵션", "future/m234": "KOSPI200 옵션 야간",
+    "future/m103": "KOSPI200 미니선물", "future/m232": "KOSPI200 미니선물 야간",
+    "future/m104": "KOSPI200 미니옵션", "future/m235": "KOSPI200 미니옵션 야간",
+    "future/m182": "KOSPI200 위클리옵션", "future/m012": "주식옵션",
+    "future/m017": "국채3년 선물", "future/m237": "국채3년 선물 야간",
+    "future/m062": "국채5년 선물",
+    "future/m016": "국채10년 선물", "future/m239": "국채10년 선물 야간",
+    "future/m221": "국채30년 선물",
+    "future/m013": "USD 달러 선물", "future/m238": "USD 달러 선물 야간",
+    "future/m018": "YEN 엔 선물", "future/m019": "EURO 유로 선물", "future/m105": "CNH 위안 선물",
+    "future/m067": "KOSDAQ150 선물", "future/m233": "KOSDAQ150 선물 야간",
+    "future/m180": "KOSDAQ150 옵션", "future/m091": "주식선물",
+    "future/m100": "섹터지수선물", "future/m181": "KRX300 선물",
+    # bond (채권)
+    "bond/m058": "채권발행정보", "bond/m161": "장내국채",
+    "bond/m038": "통합채권 체결정보", "bond/m020": "장외 K-BOND",
+    "bond/m050": "통합채권 호가", "bond/m060": "시가그룹",
+    "bond/m097": "장외채권 최종호가수익률", "bond/m056": "콜",
+    "bond/m043": "RP", "bond/m037": "RFR 무위험지표금리",
+    "bond/m074": "발행기관별 시가평가", "bond/m023": "외국환중개 원달러 환율",
+    "bond/m026": "외국환중개 외환스왑", "bond/m025": "해외금리",
+    "bond/m048": "금리스왑", "bond/etc": "채권선물바스켓 CD CP",
+    # ext (해외 라이센스 + 도메인경계)
+    "ext/m184": "미국 지수", "ext/m194": "미국 종목", "ext/m185": "일본 지수", "ext/m195": "일본 종목",
+    "ext/m186": "홍콩 지수", "ext/m196": "홍콩 종목", "ext/m187": "중국 지수", "ext/m197": "중국 종목",
+    "ext/m188": "대만 지수", "ext/m198": "대만 종목", "ext/m193": "세계 지수",
+    "ext/m174": "해외환율 위안달러",   # ⚠ 웹분류=채권-API
+    "ext/m215": "가상자산 암호화폐 코인",  # ⚠ 웹분류=기타-API
+    # news / etc
+    "news/news": "뉴스", "news/gongsi": "공시",
+    "etc/economic": "경제지표 달러지수 WTI", "etc/comp": "기업정보",
+    "etc/ifrs": "IFRS 재무", "etc/gaap": "GAAP 재무", "etc/cons": "컨센서스 추정치",
+    "etc/trend": "금융기관 수신고",
+}
+
+
+def market_name(apiurl: str) -> str:
+    """apiurl → 시장명(있으면). 없으면 빈 문자열."""
+    dom, fam = domain_family(apiurl)
+    return MARKET_NAMES.get(f"{dom}/{fam}", "")
+
+
 def load_env() -> dict[str, str]:
     env: dict[str, str] = {}
     path = find_repo_root() / ".env"
