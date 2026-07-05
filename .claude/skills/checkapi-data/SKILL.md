@@ -156,6 +156,24 @@ lab.notable_movers("20260601", "20260703")                   # 시세→공시: 
 안 맞추면 코스닥이 빈 결과 · **뉴스엔 종목태그(NCD) 없음** → 종목뉴스는 `news_jong`만 ·
 **대형주 뉴스 502** → 분할 조회 · 시장경보류 공시는 **장마감 후 발표**라 D0=이벤트일 이상 첫 거래일.
 
+### 5.6) 펀더멘털 분석 (기업정보·IFRS·컨센서스 결합)
+기업정보(`/etc/comp/*`)·IFRS 실제재무(`/etc/ifrs/*`)·컨센서스 추정(`/etc/cons/*`)을 서로/시세·수급와
+결합하는 어닝서프라이즈·리비전·이벤트스터디·밸류에이션·지분구조는 `scripts/comp_fundamentals_lab.py`로 돌린다.
+시나리오 지도·구조·함정은 **`references/comp-fundamentals-analysis.md`** 참조(전부 실호출 검증됨).
+```python
+import comp_fundamentals_lab as f    # scripts/ 에서 실행, 등록 IP·샌드박스 밖
+f.earnings_surprise("005930","202512")           # CS1 컨센(발표직전) vs 실제 서프라이즈
+f.estimate_revision("005930","202512","121500")  # CS2 추정 리비전(생성일자 시계열, 1주/1개월/3개월)
+f.earnings_event_study("005930","202512")        # CS3 발표일 전후 주가·외국인/기관 수급
+f.peer_valuation(["005930","000660"],"202512")   # CS4 피어 밸류에이션 횡단면(PER/PBR/ROE/OPM)
+f.business_profile("005930"); f.ownership("005930","202412"); f.fundamental_trend("005930")  # CS5/6/7
+# 전체 데모:  python comp_fundamentals_lab.py demo 005930 202512
+```
+핵심(상세는 레퍼런스): **TERM_TYP 1x=별도·3x=연결 / x1=누적·x2=분기**(밸류 표준=연결 31) ·
+금액=**천원**(÷1e9=조), 비율(ROE/OPM)=**소수분수 ×100** · 컨센↔IFRS **계정코드 다름**(브리지 필요) ·
+컨센은 **생성일자별 스냅샷=리비전 히스토리 내장** · **원거리 향후컨센 팽창**(sanity gate로 거름) ·
+**목표주가·투자의견·리비전카운트·Fwd.12M은 이 피드 미제공**(빈 값) · 응답키 오타 `BB_COMM_RATE`·`TERM_TYPE`.
+
 ## 항상 지킬 답변 원칙
 - endpoint를 고르면 **왜 그것인지**(제목/응답필드 근거)와 **파라미터·응답필드 의미**를 함께 설명한다.
 - 후보가 여러 개면 차이를 짧게 비교해 사용자가 고르게 한다.
@@ -192,6 +210,7 @@ lab.notable_movers("20260601", "20260703")                   # 시세→공시: 
 ## 참고 문서
 - `references/market-analysis.md`: 시황분석 시나리오→endpoint 치트시트, rank/criteria_code, 범위 밖 목록
 - `references/news-gongsi-analysis.md`: 공시·뉴스 분석 시나리오(이벤트스터디/횡단면/시계열·감성) 치트시트 + 결합 함정. 헬퍼 `scripts/news_gongsi_lab.py`
+- `references/comp-fundamentals-analysis.md`: 기업정보·IFRS·컨센서스 결합(어닝서프라이즈/리비전/이벤트스터디/밸류에이션/지분구조) 치트시트 + 구조·함정. 헬퍼 `scripts/comp_fundamentals_lab.py`
 - `references/investor-codes.md`: 투자자 구분 번호(1~20) → 이름 범례 (외국인/기관/개인 등)
 - `references/usage.md`: 인증/IP제한/POST/F-code/결합 규칙 요약
 - 리포 `docs/checkapi/`: endpoint 카탈로그·파라미터 사전·에러 가이드 (더 깊은 확인용)
