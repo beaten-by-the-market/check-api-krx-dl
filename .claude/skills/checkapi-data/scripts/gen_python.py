@@ -19,7 +19,9 @@ from _common import domain_family, find_spec, normalize_apiurl, _force_utf8_stdo
 # 파라미터명 -> 예시값 (스니펫 자리표시)
 EXAMPLES = {
     "jcode": '"005930"',
-    "codelist": '"005930,000660"',
+    # _port 버그 우회: codelist는 각 코드를 작은따옴표로 감싸야 영숫자 종목코드(0001A0 등)가
+    # 배치를 깨지 않는다. 따옴표 없이 넣으면 'Error while performing Query'로 전체 실패.
+    "codelist": '''"'005930','000660'"''',
     "sdate": '"20250101"',
     "edate": '"20250131"',
     "term": '"daily"',

@@ -23,7 +23,7 @@ CLI 데모:  python news_gongsi_lab.py demo
 from __future__ import annotations
 import json, time, urllib.parse, urllib.request, urllib.error, datetime as dt, collections, csv
 
-from _common import load_env  # 같은 scripts/ 폴더
+from _common import load_env, quote_codelist  # 같은 scripts/ 폴더
 
 BASE = "https://checkapi.koscom.co.kr"
 _ENV = load_env()
@@ -484,31 +484,34 @@ def hist_port(codes, edate):
     ※ m003(코스닥)엔 hist_info_port가 없다(404). 코스닥 과거 기간은 종목별 hist_info 루프뿐."""
     if not codes:
         return []
-    return call("/stock/m001/hist_info_port", codelist=",".join(codes), edate=edate)
+    # _port 버그 우회: 각 코드를 작은따옴표로 감싸야 영숫자 종목코드가 배치를 깨지 않는다.
+    return call("/stock/m001/hist_info_port", codelist=quote_codelist(codes), edate=edate)
 
-def basic_all_port(codes, fam, numeric_only=True, chunk=1500):
+def basic_all_port(codes, fam, numeric_only=False, chunk=1500):
     """[현재일 전용] N종목 × 오늘 벌크 크로스섹션(basic_info_all_port, 100+필드:
     외국인보유율·상한가·시총·등락 등). m001/m003 둘 다 있음.
-    ※ 코스콤 버그: codelist에 '영숫자 6자리'(스팩·최근상장) 코드가 1개라도 섞이면
-      'Error while performing Query'로 배치 전체가 실패한다(실측). 숫자코드만 보내면
-      전 코스닥 1,771종목도 한 콜에 성공 → numeric_only=True(기본)로 숫자코드만.
+    ※ 코스콤 _port 버그: codelist에 '영숫자 6자리'(스팩·최근상장) 코드가 무따옴표로
+      1개라도 섞이면 'Error while performing Query'로 배치 전체가 실패한다(실측).
+      → quote_codelist로 각 코드를 작은따옴표로 감싸면 영숫자 종목까지 정상 조회되므로
+      numeric_only는 기본 False(전 종목 포함). 숫자코드만 원하면 numeric_only=True.
     ※ edate는 무시되고 항상 현재일이다(과거일 불가)."""
     if numeric_only:
         codes = [c for c in codes if len(c) == 6 and c.isdigit()]
     out = []
     for ch in _chunks(codes, chunk):
         try:
-            out += call(f"/stock/{fam}/basic_info_all_port", codelist=",".join(ch))
+            out += call(f"/stock/{fam}/basic_info_all_port", codelist=quote_codelist(ch))
         except Exception:
             pass
     return out
 
-def bulk_hist_period(codes_by_fam, sdate, edate, numeric_only=True, chunk=800, m003_limit=None):
+def bulk_hist_period(codes_by_fam, sdate, edate, numeric_only=False, chunk=800, m003_limit=None):
     """종목 × 기간 시세 수집. 반환: (data, days)  data[code] = {date: row}.
     codes_by_fam = {'m001':[...], 'm003':[...]}.
-    - m001: hist_info_port 날짜 루프(벌크, 저비용).
+    - m001: hist_info_port 날짜 루프(벌크, 저비용). codelist는 quote_codelist로 따옴표 처리됨.
     - m003: 종목별 hist_info 루프(고비용). m003_limit로 상위 N개만 돌 수 있음(None=전체).
-    ※ codelist에 영숫자 6자리(스팩·신규)가 섞이면 배치 실패 버그 → numeric_only=True로 숫자코드만."""
+    ※ 예전엔 영숫자 6자리(스팩·신규) 코드가 _port 배치를 깨서 numeric_only=True가 기본이었으나,
+      hist_port가 각 코드를 작은따옴표로 감싸 우회하므로 기본 False(전 종목 포함)."""
     days = trading_days(sdate, edate)
     data = {}
     # KOSPI: 날짜 루프 벌크
@@ -558,7 +561,7 @@ def _period_from_series(series):
             "신고가돌파": closes[-1] >= max(highs[:-1]) if len(highs) > 1 else False,
             "종가": closes[-1]}
 
-def market_period_screen(sdate, edate, snap=None, numeric_only=True, min_amt_억=1, m003_limit=None):
+def market_period_screen(sdate, edate, snap=None, numeric_only=False, min_amt_억=1, m003_limit=None):
     """전체종목 × 기간 기간지표(유니버스 상한 없음). 반환 {code:{name,fam,...지표}}.
     - KOSPI 전종목은 벌크(hist_info_port 날짜루프)로 저비용.
     - KOSDAQ은 종목루프라 비쌈 → m003_limit로 상위 N개만(거래대금순) 제한 권장(None=전체).

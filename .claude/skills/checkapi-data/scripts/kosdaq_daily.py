@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from _common import load_env, _force_utf8_stdout
+from _common import load_env, quote_codelist, _force_utf8_stdout
 
 BASE_URL = "https://checkapi.koscom.co.kr"
 KOSDAQ = "1"  # m004 jcode: 코스닥 종합
@@ -56,29 +56,16 @@ def post(apiurl: str, **params: str) -> list[dict]:
 def bulk_basic_info(codes: list[str]) -> list[dict]:
     """basic_info_all_port로 복수종목을 한 번에 조회 (숫자코드는 1,771개도 1회 OK).
 
-    [코스콤 버그 우회 — 2026-07-04 신고, 수정 대기 중]
+    [코스콤 _port 버그 우회 — 작은따옴표 방식, 실측 검증됨]
     basic_info_all_port(codelist)는 '영숫자 6자리' 종목코드(신형 코드: 스팩 + 최근 상장
-    보통주 다수, 예: 0001A0 덕양에너젠)가 codelist에 하나라도 섞이면 배치 전체가
-    {"success":false,"message":"Error while performing Query."}로 실패한다.
-    - 대조: 동일 코드를 단일종목 endpoint(basic_info_all, jcode)로 조회하면 정상.
-    - 즉 codelist 처리 경로 한정 버그. 상세는 리포 루트 checkapi_bugreport_*.txt 참조.
-
-    대응(향후 자동 복원형):
-      1) 먼저 '전체 코드'로 시도한다. → 코스콤이 수정하면 이 경로가 그대로 성공하여
-         영숫자 종목까지 자동 포함된다(코드 수정 불필요).
-      2) 실패하면(현재 상태) '숫자코드만' 남겨 재시도한다(영숫자 종목 누락 = 근사).
+    보통주 다수, 예: 0001A0 덕양에너젠)가 codelist에 무따옴표로 하나라도 섞이면 배치 전체가
+    {"success":false,"message":"Error while performing Query."}로 실패한다. 각 코드를
+    작은따옴표로 감싸면(quote_codelist) 영숫자 코드까지 정상 조회된다 → 영숫자 종목 누락
+    없이 한 콜로 전 종목을 받는다. 상세는 리포 루트 checkapi_bugreport_*.txt 참조.
     """
     if not codes:
         return []
-    try:
-        # 낙관적 경로: 전체 포함. 버그 수정 후 이 줄이 그대로 정답이 됨.
-        return post("/stock/m003/basic_info_all_port", codelist=",".join(codes))
-    except RuntimeError:
-        numeric = [c for c in codes if c.isdigit()]
-        if len(numeric) == len(codes):
-            raise  # 영숫자 이슈가 아니라면(전부 숫자) 그대로 전파
-        # 폴백(버그 수정 전 임시): 영숫자 코드 제외하고 재시도 → 그 종목만 누락됨
-        return post("/stock/m003/basic_info_all_port", codelist=",".join(numeric))
+    return post("/stock/m003/basic_info_all_port", codelist=quote_codelist(codes))
 
 
 def _n(v) -> float:

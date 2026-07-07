@@ -165,6 +165,32 @@ def load_env() -> dict[str, str]:
     return env
 
 
+def quote_codelist(codes) -> str:
+    """복수종목(codelist) 파라미터용: 각 종목코드를 작은따옴표로 감싼 콤마열로 만든다.
+
+    [CHECK API _port 버그 우회 — 실측 검증됨]
+    codelist(_port) 경로는 종목코드를 숫자 리터럴로 취급해, '영숫자 6자리' 종목코드
+    (신형 코드: 0001A0 덕양에너젠 등 스팩+최근상장 보통주 다수)가 하나라도 무따옴표로
+    들어가면 배치 전체가 {"success":false,"message":"Error while performing Query."}로
+    실패한다. 각 코드를 문자열 리터럴('...')로 감싸면 영숫자 코드도 정상 조회된다.
+    숫자코드를 함께 감싸도 무해하며, basic_info_all_port·hist_info_port·hoga_info_port
+    등 codelist를 쓰는 모든 *_port endpoint에서 동일하게 통한다(전부 실호출 확인).
+    상세: 리포 루트 checkapi_bugreport_basic_info_all_port.txt.
+
+    codes: 코드 리스트(list) 또는 콤마구분 문자열. 기존 따옴표는 벗겨 멱등 처리한다.
+    """
+    if isinstance(codes, str):
+        parts = codes.split(",")
+    else:
+        parts = list(codes)
+    out: list[str] = []
+    for c in parts:
+        c = str(c).strip().strip("'\"").strip()
+        if c:
+            out.append(f"'{c}'")
+    return ",".join(out)
+
+
 def fcode_decoder(spec: dict) -> dict[str, str]:
     """endpoint 의 res 정의로 F-code -> 한글 설명 매핑을 만든다."""
     out: dict[str, str] = {}

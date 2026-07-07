@@ -124,9 +124,11 @@
 | **현재일 전종목** | `basic_info_all_port`(100+필드) / `rank` | **`basic_info_all_port` 됨** — 숫자코드 1,771개 한 콜 성공 |
 | **과거 기간 일별 OHLCV** | `hist_info_port(codelist, edate)` **날짜 루프**(저비용) | **없음** — hist_info_port가 404. 종목별 `hist_info` 루프뿐 |
 
-- **코스콤 버그(실측 확정)**: `basic_info_all_port`/`hist_info_port` codelist에 **영숫자 6자리 코드**
-  (스팩·최근상장: `0039P0` 등)가 **1개라도 섞이면 `Error while performing Query`로 배치 전체 실패**.
-  → **숫자코드만** 보내면 전 코스닥 1,771종목도 한 콜에 성공. 헬퍼는 `numeric_only=True`(기본)로 자동 필터.
+- **코스콤 버그 + 우회(실측 확정)**: `basic_info_all_port`/`hist_info_port`/`hoga_info_port` codelist에
+  **영숫자 6자리 코드**(스팩·최근상장: `0039P0` 등)가 **무따옴표로 1개라도 섞이면
+  `Error while performing Query`로 배치 전체 실패**. → **각 코드를 작은따옴표로 감싸면**(`'0001A0'`)
+  영숫자 코드까지 정상 조회된다(전 `*_port`에서 확인). 헬퍼(`_common.quote_codelist`)가 자동 적용하므로
+  `numeric_only`는 기본 `False`(영숫자 종목 포함). 숫자코드만 원할 때만 `numeric_only=True`.
 - `basic_info_all_port`는 **edate를 무시하고 항상 현재일**(과거일 불가). 과거 기간엔 못 쓴다.
 - 헬퍼: `basic_all_port(codes, fam)` 현재일 벌크 · `hist_port(codes, edate)` KOSPI 과거일 벌크 ·
   `bulk_hist_period({'m001':[…],'m003':[…]}, s, e)` 코스피=날짜루프/코스닥=종목루프(`m003_limit`로 상위 N) ·

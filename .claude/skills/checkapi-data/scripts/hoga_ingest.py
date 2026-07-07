@@ -87,10 +87,11 @@ def _get_caller():
         return call
 
 def fetch_venue_market(call, venue, market, codes):
-    """한 (거래소,시장)의 호가를 복수종목 1콜로. codelist는 '005930','000660' 형식."""
+    """한 (거래소,시장)의 호가를 복수종목 1콜로. codelist는 각 코드를 작은따옴표로 감싼
+    형식('005930','000660')이어야 _port 버그(영숫자 코드 배치 실패)를 피한다."""
+    from _common import quote_codelist
     fam = VENUE_FAM[venue][market]
-    codelist = ", ".join(f"'{c}'" for c in codes)
-    return call(f"/stock/{fam}/hoga_info_port", codelist=codelist)
+    return call(f"/stock/{fam}/hoga_info_port", codelist=quote_codelist(codes))
 
 # ---------------- DB 적재 ----------------
 INSERT_SQL = """

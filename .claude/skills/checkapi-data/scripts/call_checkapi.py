@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from _common import fcode_decoder, find_spec, load_env, normalize_apiurl, _force_utf8_stdout
+from _common import fcode_decoder, find_spec, load_env, normalize_apiurl, quote_codelist, _force_utf8_stdout
 
 BASE_URL = "https://checkapi.koscom.co.kr"
 
@@ -67,7 +67,11 @@ def main() -> None:
     if not cust_id or not auth_key:
         raise SystemExit("CHECK_CUST_ID / CHECK_AUTH_KEY 를 .env 또는 환경변수에서 찾지 못했습니다.")
 
-    payload = {"cust_id": cust_id, "auth_key": auth_key, **parse_kv(args.params)}
+    params = parse_kv(args.params)
+    # _port 버그 우회: codelist는 각 코드를 작은따옴표로 감싸야 영숫자 종목코드가 실패하지 않는다.
+    if params.get("codelist"):
+        params["codelist"] = quote_codelist(params["codelist"])
+    payload = {"cust_id": cust_id, "auth_key": auth_key, **params}
     data = urllib.parse.urlencode(payload).encode()
     req = urllib.request.Request(f"{BASE_URL}{args.apiurl}", data=data)  # POST
     try:

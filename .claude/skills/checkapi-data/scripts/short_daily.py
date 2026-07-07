@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
-from _common import load_env, _force_utf8_stdout
+from _common import load_env, quote_codelist, _force_utf8_stdout
 
 BASE_URL = "https://checkapi.koscom.co.kr"
 # (라벨, 지수패밀리, 지수코드, 종목패밀리)
@@ -64,17 +64,12 @@ def _n(v) -> float:
 
 
 def resilient_port(stk_fam: str, codes: list[str]) -> list[dict]:
-    """basic_info_all_port 벌크. 영숫자 코드가 섞이면 코스콤 버그로 전체 실패 →
-    숫자코드만 재시도(폴백). (버그 수정되면 전체 시도가 그대로 성공)."""
+    """basic_info_all_port 벌크. 영숫자 코드가 무따옴표로 섞이면 코스콤 _port 버그로
+    전체 실패 → 각 코드를 작은따옴표로 감싸(quote_codelist) 영숫자 종목까지 한 콜에
+    정상 조회한다(실측 검증). 상세는 리포 루트 checkapi_bugreport_*.txt."""
     if not codes:
         return []
-    try:
-        return post(f"/stock/{stk_fam}/basic_info_all_port", codelist=",".join(codes))
-    except RuntimeError:
-        numeric = [c for c in codes if c.isdigit()]
-        if len(numeric) == len(codes):
-            raise
-        return post(f"/stock/{stk_fam}/basic_info_all_port", codelist=",".join(numeric))
+    return post(f"/stock/{stk_fam}/basic_info_all_port", codelist=quote_codelist(codes))
 
 
 def name_map(stk_fam: str) -> dict:
