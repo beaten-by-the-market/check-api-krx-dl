@@ -202,7 +202,8 @@ fl.flash_scan_day("20260703", universe_top=40)   # 특정일 시장 스캔 → f
 fl.explain_flash("002990","20260703")            # 최대 이벤트 원인분석(거래량·지수·공시)
 fl.flash_hunt("20260629","20260703", codes=[...])# 기간 헌트(일봉 wick 사전필터→장중 확인)
 ```
-핵심(상세는 레퍼런스): 히스토리컬 장중=**intra_date(1분봉)** 뿐(tick_info·intra_info는 당일만, **초단위 과거 없음**) ·
+핵심(상세는 레퍼런스): 히스토리컬 장중 = **intra_date(1분봉, 소급 무제한)** + **tick_date(과거 체결/틱,
+최근 ~101일만 보관 — 지나면 영구 소실)**. tick_info·intra_info 는 당일만 ·
 시간 `F20004_02`=HHMMSSss·OHLC `F20005~08_02` · 지수동반은 **m002(코스피)/m004(코스닥) 1분봉** ·
 개장/종가 동시호가 제외 · 되돌림 **≥70%=V자(일시적)** vs **<30%=지속(재료성)** · m001에 코스닥코드=에러.
 
@@ -211,7 +212,11 @@ fl.flash_hunt("20260629","20260703", codes=[...])# 기간 헌트(일봉 wick 사
 m226~m229=NXT/통합 업종. NXT/통합도 hoga_info(46필드=10단계)·intra_date 등 동일 endpoint 보유.
 **live 데이터가 실제로 나온다**(과거 "spec state=off라 live 반환 불명" 서술 정정 — 2026-07 실호출 확인):
 005930 2026-07-08에 m001 33,525,758 + m222 33,716,349 = m224 67,242,107로 **거래량이 합산**되고 종가는 거래소별로 다르다.
-일별 NXT 실거래 유니버스는 `scripts/nxt_universe.py`(662회·48MB·3분). 시나리오·함정은 **`references/nxt-analysis.md`**.
+일별 NXT 실거래 유니버스는 `scripts/nxt_universe.py`(662회·48MB·3분 → **219,543쌍·1,009종목**).
+**과거 체결(틱)은 `tick_date`** 로 받되 **보관이 최근 ~101일뿐**(소멸성 — 오래된 날부터 먼저 받을 것).
+**NXT 1분봉은 08:00~20:00 전 세션(691봉)** 이라 프리·애프터가 다 잡힌다(KRX는 09:00~15:30, 382봉).
+"NXT 애프터/프리 → KRX 시초가" 연구용 MySQL 파이프라인: `scripts/nxt_krx_ingest.py` + `nxt_krx_schema.sql`.
+시나리오·함정은 **`references/nxt-analysis.md`**.
 ```bash
 python .claude/skills/checkapi-data/scripts/nxt_universe.py --probe   # data_list 지원/한도 확인
 python .claude/skills/checkapi-data/scripts/nxt_universe.py           # 등록 IP·샌드박스 밖

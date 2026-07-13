@@ -11,3 +11,9 @@ node_modules/
 
 # 코드 카탈로그 캐시(대용량·KOSCOM 데이터, 로컬 생성)
 .claude/skills/checkapi-data/cache/
+
+# 로컬 권한 설정(개인용, 커밋 금지)
+.claude/settings.local.json
+
+# 수집 산출물(대용량, 로컬 생성)
+data/
