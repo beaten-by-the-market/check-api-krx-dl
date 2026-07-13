@@ -500,8 +500,28 @@ def plan(conn):
           "대형주에 쏠려 과대추정되는 경향이 있습니다.")
 
 
+class _Tee:
+    """stdout 을 파일에도 쓴다. 배치파일 리다이렉션(> 파일)을 안 쓰기 위한 것 —
+    cmd 는 % 를 변수로 먹고 한글 주석을 CP949 로 오독해 배치가 조용히 깨진다."""
+
+    def __init__(self, path):
+        self.f = open(path, "a", encoding="utf-8")
+        self.out = sys.stdout
+
+    def write(self, s):
+        self.out.write(s)
+        self.f.write(s)
+        self.f.flush()
+
+    def flush(self):
+        self.out.flush()
+        self.f.flush()
+
+
 def main():
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
+    ap.add_argument("--log", metavar="DIR",
+                    help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
     ap.add_argument("--job", choices=["nxt_tick", "krx_min", "nxt_min"])
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help=f"이번 실행에서 받을 최대 응답 바이트 (기본 {DEFAULT_BUDGET:,}, 일 한도 {DAILY_LIMIT:,})")
@@ -515,6 +535,11 @@ def main():
     ap.add_argument("--sdate", default="20250301")
     ap.add_argument("--edate", default=dt.date.today().strftime("%Y%m%d"))
     args = ap.parse_args()
+
+    if args.log:
+        os.makedirs(args.log, exist_ok=True)
+        sys.stdout = _Tee(os.path.join(args.log, f"ingest_{dt.date.today():%Y%m%d}.log"))
+        print(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} 시작 =====")
 
     conn = connect()
     try:

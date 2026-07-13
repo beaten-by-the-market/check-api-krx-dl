@@ -109,11 +109,41 @@ m001(KRX) 33,525,758 + m222(NXT) 33,716,349 = m224(통합) 67,242,107
 
 ```bash
 python nxt_universe.py --sdate 20250301 --edate <오늘>          # 드라이버: 21.9만 쌍, 48MB
-python nxt_krx_ingest.py --init-calendar --load-universe <csv>
-python nxt_krx_ingest.py --plan                                 # 남은 콜·GB·소요일수
-python nxt_krx_ingest.py --job nxt_tick    # 최우선(소멸성). 오래된 날부터.
-python nxt_krx_ingest.py --job krx_min     # 이후
+python nxt_krx_ingest.py --init-calendar --load-universe <csv>  # 최초 1회
+python nxt_krx_ingest.py --daily          # 이후 매일 이것만: 신규거래일 편입 -> 틱 -> KRX분봉 -> NXT분봉
+python nxt_krx_ingest.py --plan           # 남은 콜·GB·소요일수(표본 300콜 넘으면 실측 평균으로)
 ```
+
+**Windows 작업 스케줄러 등록** (매일 21:00 KST — NXT 장 마감 20:00 이후):
+
+```powershell
+$bat = '...\scripts\run_daily.bat'
+$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument "/c `"$bat`""
+$t = New-ScheduledTaskTrigger -Daily -At 21:00
+$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -Hidden `
+       -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries -MultipleInstances IgnoreNew
+$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Highest
+Register-ScheduledTask -TaskName 'NXT-KRX daily ingest' -Action $a -Trigger $t -Settings $s -Principal $p -Force
+```
+
+- **`LogonType S4U`** 여야 로그아웃 상태에서도 돈다(기본 `Interactive`는 로그인해 있어야 실행).
+  배터리 기본값(`DisallowStartIfOnBatteries`)도 꺼야 노트북에서 안 건너뛴다. PC가 완전히 꺼져 있으면
+  당연히 안 돌지만 `StartWhenAvailable`로 다음 부팅 때 따라잡는다.
+- ⚠ **배치 파일에 로직을 넣지 말 것.** cmd 는 `%s`·`%d` 를 변수로 먹어 파이썬 one-liner 를 조용히
+  깨뜨리고, UTF-8 한글 주석을 CP949 로 오독한다(실제로 당했다). `run_daily.bat` 은 ASCII 한 줄이고
+  로그는 파이썬이 `--log` 로 직접 쓴다.
+
+**실측 비용(2026-07 기준, 7필드)** — 사전추정이 크게 빗나갔으니 `--plan` 의 실측치를 믿을 것:
+
+| 작업 | 남은 콜 | 콜당 | 합계 |
+| --- | --- | --- | --- |
+| nxt_tick | 41,042 | **484KB**(실측) | 19.9GB |
+| krx_min | 220,844 | 50KB | 11.1GB |
+| nxt_min | 218,165 | 53KB | 11.6GB |
+| | | | **42.6GB ≈ 43일** |
+
+틱 백필 속도(하루 ~1,890콜 ≈ 3.1거래일치)가 보관창 만료 속도(0.7거래일/일)보다 훨씬 빨라
+**만료 전에 다 건진다.** 적재량: 틱 1콜 ≈ 7,400행, MySQL 압축 후 ≈ 36B/행.
 
 - 유니버스 실측(2025-03-04~2026-07-10): **219,543 (거래일,종목) 쌍 · 고유 1,009종목 · 332거래일 · 상폐 7종목**.
 - **KRX는 당일+익일을 다 받아도 콜이 219,543 → 220,239(+0.3%)뿐이다.** 거래종목 집합이 날마다 거의
