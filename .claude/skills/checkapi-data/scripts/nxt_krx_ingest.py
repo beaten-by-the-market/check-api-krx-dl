@@ -291,10 +291,14 @@ def daily(conn, budget):
 
     for job in ("nxt_tick", "krx_min", "nxt_min"):
         if _bytes >= budget:
-            print(f"\n[예산 소진] {job} 이후 작업은 내일 이어서 진행합니다.")
+            print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
         print()
-        run(conn, job, budget)
+        # KOSCOM 이 자체 예산보다 먼저 한도를 걸 수 있다(다른 작업이 같은 cust_id 를 썼을 때).
+        # 그때 다음 job 으로 넘어가면 헛호출만 하므로 여기서 끊는다.
+        if run(conn, job, budget) == "quota":
+            print(f"\n[한도 도달] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
+            break
     print(f"\n===== 오늘 총 수신 {_bytes/1e6:.0f}MB =====")
 
 
@@ -412,6 +416,7 @@ def run(conn, job, budget):
         print(f"       틱 보관 하한 {tick_floor()} — 오래된 날부터 처리합니다(만료 레이스).")
 
     t0, ok, empty, exp = time.time(), 0, 0, 0
+    stopped = None                      # 'quota' | 'error' | None(완주)
     try:
         for i, (code, day, market) in enumerate(todo, 1):
             if _bytes >= budget:
@@ -438,9 +443,12 @@ def run(conn, job, budget):
                       f"{_bytes/1e6:.0f}MB  {rate:.1f}콜/s  "
                       f"ETA(예산소진) {(budget-_bytes)/max(_bytes/max(i,1),1)/max(rate,0.01)/60:.0f}분", flush=True)
     except Quota as exc:
+        stopped = "quota"
         print(f"\n[STOP] {exc}")
-        print("       내일 같은 명령을 다시 실행하면 ingest_log 기준으로 이어서 진행합니다.")
+        print("       한도/예산 도달은 정상 종료입니다(오류 아님). 자정에 한도가 리셋되며,")
+        print("       다음 실행에서 ingest_log 기준으로 이어서 진행합니다.")
     except ApiError as exc:
+        stopped = "error"
         print(f"\n[STOP] API 오류: {exc}")
         print("       빈 결과로 흘리지 않고 중단했습니다. 원인 확인 후 재실행하세요.")
     finally:
@@ -448,6 +456,7 @@ def run(conn, job, budget):
         print(f"\n[{job}] 이번 실행: ok {ok:,} · 빈응답 {empty:,} · 조회불가 {exp:,} · "
               f"수신 {_bytes/1e6:.0f}MB · {time.time()-t0:.0f}초")
         coverage(conn, job)
+    return stopped
 
 
 def coverage(conn, job):
