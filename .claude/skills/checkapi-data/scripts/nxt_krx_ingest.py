@@ -69,6 +69,12 @@ AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300}
 DAILY_LIMIT = 1_000_000_000
 DEFAULT_BUDGET = 900_000_000     # 일 한도의 90%에서 스스로 멈춘다
 
+# 미등록 IP 접속 이력이 있으면 키가 일시 차단된다(약 20분). 차단 메시지는 키 오류와 똑같이
+# 'cust_id 또는 auth_key가 정확하지 않습니다.' 로 와서 구분이 안 된다.
+# -> 즉시 포기하지 말고 기다렸다 재시도한다. 무인 야간 실행에서 하룻밤을 통째로 날리지 않기 위함.
+AUTH_RETRY_WAIT = 300            # 5분 간격으로 재시도
+AUTH_MAX_WAIT = 3600             # 최대 1시간까지 기다린 뒤 포기(차단 20분 + 여유)
+
 
 class Quota(Exception):
     """일 사용량 한도 또는 자체 예산 도달. 중단하고 다음 날 재개한다."""
@@ -82,6 +88,10 @@ class Unavailable(Exception):
     """보관창 밖·상폐 등으로 그 (종목,일자)는 원천적으로 조회 불가."""
 
 
+class Blocked(Exception):
+    """인증 거부가 AUTH_MAX_WAIT 동안 안 풀렸다. 키/IP 설정 문제이거나 장기 차단."""
+
+
 # ------------------------------------------------------------------ API
 
 _env = C.load_env()
@@ -90,38 +100,62 @@ _bytes = 0
 _last_ts_call = 0.0
 
 
+def _is_auth_reject(msg: str) -> bool:
+    """미등록 IP 접속으로 인한 일시 차단(약 20분)과 진짜 키 오류는 메시지가 같다."""
+    return "auth_key" in msg or "cust_id" in msg or "access_denied" in msg
+
+
 def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
-    """POST 호출. 반환: (results, 응답바이트)."""
+    """POST 호출. 반환: (results, 응답바이트).
+
+    인증 거부(미등록 IP 차단 포함)는 즉시 포기하지 않고 AUTH_RETRY_WAIT 간격으로
+    AUTH_MAX_WAIT 까지 기다렸다 재시도한다. 야간 무인 실행 중 20분 차단에 걸렸다고
+    그날 한도를 통째로 날리면 안 되기 때문이다. 끝내 안 풀리면 Blocked 로 올린다.
+    """
     global _bytes, _last_ts_call
     if timeseries:                       # 시계열(hist_info 등)만 초당 1회 제한이 있다
         gap = time.time() - _last_ts_call
         if gap < 1.15:
             time.sleep(1.15 - gap)
     body = urllib.parse.urlencode({"cust_id": CID, "auth_key": KEY, **params}).encode()
-    req = urllib.request.Request(BASE + apiurl, data=body)
-    for attempt in range(tries):
+
+    net_fail, auth_waited = 0, 0
+    while True:
+        req = urllib.request.Request(BASE + apiurl, data=body)   # 재시도마다 새로 만든다
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 raw = resp.read()
-            _bytes += len(raw)
-            if timeseries:
-                _last_ts_call = time.time()
-            payload = json.loads(raw)
-            if payload.get("success"):
-                return payload["results"], len(raw)
-            msg = json.dumps(payload.get("message") or payload, ensure_ascii=False)
-            if "사용량" in msg or "초과" in msg:
-                raise Quota(msg)
-            # 보관창 밖 / 상폐 / 해당일 데이터 없음 -> 재시도해도 소용없다
-            if "performing Query" in msg or "jcode_denied" in msg:
-                raise Unavailable(msg)
-            raise ApiError(f"{apiurl} {params} -> {msg}")
-        except (Quota, ApiError, Unavailable):
-            raise
-        except Exception as exc:                       # 네트워크·타임아웃만 재시도
-            if attempt == tries - 1:
+        except Exception as exc:                                 # 네트워크·타임아웃만 재시도
+            net_fail += 1
+            if net_fail >= tries:
                 raise ApiError(f"{apiurl} {params} -> {exc}")
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(1.5 * net_fail)
+            continue
+
+        _bytes += len(raw)
+        if timeseries:
+            _last_ts_call = time.time()
+        payload = json.loads(raw)
+        if payload.get("success"):
+            return payload["results"], len(raw)
+
+        msg = json.dumps(payload.get("message") or payload, ensure_ascii=False)
+        if "사용량" in msg or "초과" in msg:
+            raise Quota(msg)
+        # 보관창 밖 / 상폐 / 해당일 데이터 없음 -> 재시도해도 소용없다
+        if "performing Query" in msg or "jcode_denied" in msg:
+            raise Unavailable(msg)
+        if _is_auth_reject(msg):
+            if auth_waited >= AUTH_MAX_WAIT:
+                raise Blocked(f"인증 거부가 {AUTH_MAX_WAIT//60}분간 안 풀렸습니다: {msg}")
+            auth_waited += AUTH_RETRY_WAIT
+            print(f"  [인증 거부] {msg}\n"
+                  f"    미등록 IP 접속에 의한 일시 차단(약 20분)일 수 있습니다. "
+                  f"{AUTH_RETRY_WAIT//60}분 후 재시도 "
+                  f"(누적 대기 {auth_waited//60}/{AUTH_MAX_WAIT//60}분)", flush=True)
+            time.sleep(AUTH_RETRY_WAIT)
+            continue
+        raise ApiError(f"{apiurl} {params} -> {msg}")
 
 
 def check_fields(rows, requested, apiurl):
@@ -285,6 +319,12 @@ def daily(conn, budget):
     except Quota as exc:
         print(f"[STOP] 유니버스 갱신 중 한도 도달: {exc}")
         return
+    except Blocked as exc:
+        # 21:00 시작 시점에 IP 차단이 걸려 있으면 여기서 먼저 걸린다. call() 이 이미
+        # 최대 1시간 기다려 봤으므로, 여기까지 왔으면 단순 20분 차단이 아니다.
+        print(f"[STOP] 인증 차단이 안 풀렸습니다: {exc}\n"
+              f"       수집을 시작하지 않습니다. 다음 실행에서 재시도합니다.")
+        return
     except ApiError as exc:
         print(f"[STOP] 유니버스 갱신 실패: {exc}\n       수집을 진행하지 않습니다(불완전 유니버스 방지).")
         return
@@ -294,10 +334,9 @@ def daily(conn, budget):
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
         print()
-        # KOSCOM 이 자체 예산보다 먼저 한도를 걸 수 있다(다른 작업이 같은 cust_id 를 썼을 때).
-        # 그때 다음 job 으로 넘어가면 헛호출만 하므로 여기서 끊는다.
-        if run(conn, job, budget) == "quota":
-            print(f"\n[한도 도달] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
+        # 한도(quota) 또는 인증 차단(blocked)에 걸리면 다음 job 으로 넘어가 봐야 헛호출이다.
+        if run(conn, job, budget) in ("quota", "blocked"):
+            print(f"\n[중단] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
     print(f"\n===== 오늘 총 수신 {_bytes/1e6:.0f}MB =====")
 
@@ -447,6 +486,12 @@ def run(conn, job, budget):
         print(f"\n[STOP] {exc}")
         print("       한도/예산 도달은 정상 종료입니다(오류 아님). 자정에 한도가 리셋되며,")
         print("       다음 실행에서 ingest_log 기준으로 이어서 진행합니다.")
+    except Blocked as exc:
+        stopped = "blocked"
+        print(f"\n[STOP] {exc}")
+        print("       확인할 것: (1) 등록 IP 밖(사내 프록시·VPN·클라우드)에서 같은 키를 쓰지 않았는지")
+        print("                  (2) .env 의 CHECK_CUST_ID / CHECK_AUTH_KEY 가 맞는지")
+        print("       받은 데이터는 모두 저장됐고, 다음 실행에서 이어서 진행합니다.")
     except ApiError as exc:
         stopped = "error"
         print(f"\n[STOP] API 오류: {exc}")
@@ -567,6 +612,9 @@ def main():
         if not any([args.init_calendar, args.load_universe, args.refresh_universe,
                     args.daily, args.plan, args.job]):
             ap.print_help()
+    except Blocked as exc:               # --daily 밖의 경로(--refresh-universe 등)에서 올라온 것
+        print(f"\n[STOP] {exc}")
+        print("       등록 IP 밖에서 같은 키를 쓰지 않았는지, .env 자격증명이 맞는지 확인하세요.")
     finally:
         conn.close()
 
