@@ -51,16 +51,19 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 ) ENGINE=InnoDB;
 
 -- ------------------------------------------------------------------- NXT 체결(틱)
--- /stock/m222|m223/tick_date, data_list = F15019,F15001,F15020,F15022
+-- /stock/m222|m223/tick_date, data_list = F16604,F15019,F15001,F15020,F15022
 -- 세션: 프리 08:00~08:50 / 메인 09:00~15:20 / 애프터 15:40~20:00
 -- 보관: 최근 약 101일(달력)뿐 -> 지나가면 영구 소실. 최우선 수집 대상.
--- n = API 응답 내 순번(0-based). 로컬 생성값이라 응답 바이트를 늘리지 않으면서
---     (trade_date, code) 단위 DELETE+INSERT 재적재를 멱등하게 만든다.
+-- n   = API 응답 내 순번(0-based). 로컬 생성값. (trade_date, code) 단위 DELETE+INSERT 재적재를 멱등하게.
+-- seq = F16604 종목별저장일련번호. KOSCOM 이 원본에서 매기는 단조증가 번호로, 응답 배열 순서(n)와
+--       정확히 일치한다(실측, 중복 없음). ts 가 초 해상도뿐이라(센티초 미제공, API 한계) 같은 초에
+--       몰린 체결의 순서는 이 seq(=n)로만 구분된다. 초기 15거래일치는 seq 를 안 받아 NULL.
 CREATE TABLE IF NOT EXISTS nxt_tick (
   trade_date DATE         NOT NULL,
   code       CHAR(6)      NOT NULL,
   n          INT UNSIGNED NOT NULL,
-  ts         INT UNSIGNED NOT NULL,   -- F15019 체결시간 HHMMSSss (8000000 = 08:00:00.00)
+  seq        INT UNSIGNED NULL,       -- F16604 종목별저장일련번호(KOSCOM 원순번)
+  ts         INT UNSIGNED NOT NULL,   -- F15019 체결시간 HHMMSSss, 실질 초 해상도 (8000000 = 08:00:00)
   price      INT          NOT NULL,   -- F15001 현재가(체결가)
   qty        INT          NOT NULL,   -- F15020 체결량
   side       TINYINT      NULL,       -- F15022 체결성향 1:B 2:BB 4:S 5:SS 9:대량 10:바스켓 11:신고대량 27:경매매

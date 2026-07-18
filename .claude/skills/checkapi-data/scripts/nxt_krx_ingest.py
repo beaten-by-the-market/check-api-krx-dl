@@ -53,7 +53,10 @@ C._force_utf8_stdout()
 BASE = "https://checkapi.koscom.co.kr"
 
 # 응답 필드(F-code). data_list 로 이것만 받는다 -- 전체 필드로 받으면 수십 배가 된다.
-TICK_FIELDS = ["F15019", "F15001", "F15020", "F15022"]          # 체결시간·체결가·체결량·체결성향
+# F15019(체결시간)는 초 해상도뿐이다(전체 필드로 받아도 센티초 자리는 항상 00 -- API 원천 한계,
+# 실호출 확인). 같은 초에 몰린 체결의 순서는 F16604(종목별저장일련번호)로 구분한다: KOSCOM 이
+# 원본에서 매기는 단조증가 번호로, 응답 배열 순서(우리 n)와 정확히 일치한다(중복 없음, 실측).
+TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022"]  # 일련번호·체결시간·체결가·체결량·체결성향
 BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
               "F20008_02", "F20010_02", "F20011_02"]            # 시각·시고저종·거래량·거래대금
 
@@ -407,14 +410,16 @@ def fetch_tick(cur, code, day, market):
         if qty <= 0:
             continue
         side = r.get("F15022")
-        recs.append((day, code, n, ts, int(r["F15001"] or 0), qty,
+        seq = r.get("F16604")               # KOSCOM 원순번(같은 초 안 체결 순서). 응답 배열 순서와 일치.
+        recs.append((day, code, n, int(seq) if seq not in (None, "") else None,
+                     ts, int(r["F15001"] or 0), qty,
                      int(side) if side not in (None, "") else None))
     if recs:
         cur.execute("DELETE FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
         for i in range(0, len(recs), 5000):
             cur.executemany(
-                "INSERT INTO nxt_tick (trade_date, code, n, ts, price, qty, side) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
+                "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
     return len(recs), nb
 
 
