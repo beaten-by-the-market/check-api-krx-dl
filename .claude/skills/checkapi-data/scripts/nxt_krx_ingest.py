@@ -459,6 +459,16 @@ def run(conn, job, budget):
     if job == "nxt_tick":
         print(f"       틱 보관 하한 {tick_floor()} — 오래된 날부터 처리합니다(만료 레이스).")
 
+    # 수집 세션에서만 fsync 부담을 낮춘다(=2: 커밋 시 로그기록, fsync 는 초당 1회).
+    # 크래시 시 최대 1초치를 잃을 수 있으나, 데이터+체크포인트가 같은 트랜잭션이라 함께 롤백돼
+    # 정합성은 유지되고, 재개가 그 지점부터 다시 받는다. 세션 한정이라 서버 전역 설정은 안 건드린다.
+    with conn.cursor() as cur:
+        try:
+            cur.execute("SET SESSION innodb_flush_log_at_trx_commit=2")
+        except Exception:
+            pass
+
+    COMMIT_EVERY = 25                   # 종목마다 커밋(600회 fsync)하지 않고 묶어서 커밋
     t0, ok, empty, exp = time.time(), 0, 0, 0
     stopped = None                      # 'quota' | 'error' | None(완주)
     try:
@@ -480,7 +490,8 @@ def run(conn, job, budget):
                     log_done(cur, job, code, day, "ok" if n else "empty", n, nb)
                     ok += 1 if n else 0
                     empty += 0 if n else 1
-            conn.commit()
+            if i % COMMIT_EVERY == 0:
+                conn.commit()
             if i % 200 == 0:
                 rate = i / max(time.time() - t0, 1)
                 print(f"  {i:,}/{len(todo):,}  ok {ok:,} / 빈 {empty:,} / 불가 {exp:,}  "
