@@ -145,9 +145,18 @@ def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
         msg = json.dumps(payload.get("message") or payload, ensure_ascii=False)
         if "사용량" in msg or "초과" in msg:
             raise Quota(msg)
-        # 보관창 밖 / 상폐 / 해당일 데이터 없음 -> 재시도해도 소용없다
-        if "performing Query" in msg or "jcode_denied" in msg:
+        # jcode_denied = 상폐/없는 종목 -> 확실히 영구 불가
+        if "jcode_denied" in msg:
             raise Unavailable(msg)
+        # "performing Query" 는 두 상황에서 온다: (a)보관창 밖=영구불가, (b)대형주 일시 서버오류.
+        # 여기선 구분 불가하므로 몇 번 재시도해 (b)를 흡수하고, 그래도 안 되면 Unavailable 로 올린다.
+        # (b)인데 창 안이면 호출부가 expired 로 굳히지 않고 다음 실행에 재시도하도록 처리한다.
+        if "performing Query" in msg:
+            net_fail += 1
+            if net_fail >= tries:
+                raise Unavailable(msg)
+            time.sleep(1.5 * net_fail)
+            continue
         if _is_auth_reject(msg):
             if auth_waited >= AUTH_MAX_WAIT:
                 raise Blocked(f"인증 거부가 {AUTH_MAX_WAIT//60}분간 안 풀렸습니다: {msg}")
@@ -484,8 +493,20 @@ def run(conn, job, budget):
                     else:
                         n, nb = fetch_bar(cur, code, day, market, "KRX")
                 except Unavailable as exc:
-                    log_done(cur, job, code, day, "expired", msg=str(exc))
-                    exp += 1
+                    # "performing Query" 는 보관창 밖(영구불가)일 수도, 대형주 일시 서버오류일 수도 있다.
+                    # 날짜가 보관창 한복판(보수적으로 95일 이내)이면 일시오류로 보고 expired 로 굳히지
+                    # 않는다 -> 로그를 안 남기면 다음 실행 대상에 그대로 남아 재시도된다.
+                    # 경계 근처(오래된 날)면 진짜 만료이므로 expired 로 기록해 재시도를 멈춘다.
+                    transient = (job == "nxt_tick"
+                                 and "jcode_denied" not in str(exc)
+                                 and day > dt.date.today() - dt.timedelta(days=95))
+                    if transient:
+                        print(f"    [일시오류 재시도예정] {day} {code}: {exc} "
+                              f"(보관창 안 -> 다음 실행에 다시 시도)", flush=True)
+                        exp += 0        # expired 로 세지 않는다
+                    else:
+                        log_done(cur, job, code, day, "expired", msg=str(exc))
+                        exp += 1
                 else:
                     log_done(cur, job, code, day, "ok" if n else "empty", n, nb)
                     ok += 1 if n else 0
