@@ -202,6 +202,17 @@ def connect():
     )
 
 
+RETRY_MAX = 3       # 보관창 안 일시오류를 몇 번까지 재시도할지(서버측 결손이면 영원히 성공 못 함)
+
+
+def _retry_count(cur, job, code, day):
+    """이 (job,code,day)가 지금까지 'retry'로 기록된 횟수. n_rows 칸을 카운터로 쓴다."""
+    cur.execute("SELECT status, n_rows FROM ingest_log "
+                "WHERE job=%s AND code=%s AND trade_date=%s", (job, code, day))
+    r = cur.fetchone()
+    return int(r[1]) if r and r[0] == "retry" else 0
+
+
 def log_done(cur, job, code, day, status, n_rows=0, n_bytes=0, msg=None):
     cur.execute(
         "INSERT INTO ingest_log (job, code, trade_date, status, n_rows, n_bytes, msg) "
@@ -367,7 +378,7 @@ def targets(conn, job):
             cur.execute(
                 "SELECT u.code, u.trade_date, u.market FROM nxt_universe u "
                 "LEFT JOIN ingest_log l ON l.job=%s AND l.code=u.code AND l.trade_date=u.trade_date "
-                "WHERE u.trade_date >= %s AND l.status IS NULL "
+                "WHERE u.trade_date >= %s AND (l.status IS NULL OR l.status='retry') "
                 "ORDER BY u.trade_date ASC, u.code ASC",        # 오래된 날 = 먼저 만료 = 먼저 수집
                 ("nxt_tick", tick_floor()))
         elif job == "nxt_min":
@@ -497,15 +508,21 @@ def run(conn, job, budget):
                     # 날짜가 보관창 한복판(보수적으로 95일 이내)이면 일시오류로 보고 expired 로 굳히지
                     # 않는다 -> 로그를 안 남기면 다음 실행 대상에 그대로 남아 재시도된다.
                     # 경계 근처(오래된 날)면 진짜 만료이므로 expired 로 기록해 재시도를 멈춘다.
+                    # 단 서버측 데이터 결손이면 영원히 성공하지 않으므로(005930/2026-05-07 실측),
+                    # 실행 단위로 RETRY_MAX 회까지만 재시도하고 그 뒤엔 expired 로 굳힌다.
                     transient = (job == "nxt_tick"
                                  and "jcode_denied" not in str(exc)
                                  and day > dt.date.today() - dt.timedelta(days=95))
-                    if transient:
+                    tries_so_far = _retry_count(cur, job, code, day)
+                    if transient and tries_so_far < RETRY_MAX:
+                        log_done(cur, job, code, day, "retry", msg=str(exc),
+                                 n_rows=tries_so_far + 1)
                         print(f"    [일시오류 재시도예정] {day} {code}: {exc} "
-                              f"(보관창 안 -> 다음 실행에 다시 시도)", flush=True)
-                        exp += 0        # expired 로 세지 않는다
+                              f"(보관창 안, {tries_so_far + 1}/{RETRY_MAX}회 -> 다음 실행에 재시도)",
+                              flush=True)
                     else:
-                        log_done(cur, job, code, day, "expired", msg=str(exc))
+                        why = "" if not transient else f" (재시도 {RETRY_MAX}회 소진)"
+                        log_done(cur, job, code, day, "expired", msg=str(exc) + why)
                         exp += 1
                 else:
                     log_done(cur, job, code, day, "ok" if n else "empty", n, nb)

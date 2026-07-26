@@ -37,11 +37,13 @@ CREATE TABLE IF NOT EXISTS nxt_universe (
 -- --------------------------------------------------------------- 수집 체크포인트
 -- (job, code, trade_date) 1건 = API 1콜. 재개·완전성 검사·바이트 회계의 근거.
 -- status: ok(적재) / empty(응답 비었음) / expired(보관창 밖·상폐 등 조회불가) / fail
+--         retry(보관창 안인데 서버오류 -> 재시도 대기. n_rows 칸을 재시도 횟수 카운터로 사용,
+--               RETRY_MAX 회 넘으면 expired 로 굳힌다)
 CREATE TABLE IF NOT EXISTS ingest_log (
   job        VARCHAR(16) NOT NULL,   -- nxt_tick | krx_min | nxt_min
   code       CHAR(6)     NOT NULL,
   trade_date DATE        NOT NULL,
-  status     ENUM('ok','empty','expired','fail') NOT NULL,
+  status     ENUM('ok','empty','expired','fail','retry') NOT NULL,
   n_rows     INT         NOT NULL DEFAULT 0,
   n_bytes    INT         NOT NULL DEFAULT 0,
   msg        VARCHAR(200) NULL,
