@@ -394,15 +394,36 @@ def daily(conn, budget):
 
     # tick_ob(호가 보강)를 먼저 돌린다: 대상이 보관창 안으로 한정돼 스스로 소진되고,
     # 콜당 비용이 전체 재수집의 절반이라 빨리 끝난다. 미루면 그대로 만료된다.
+    # 과거 검증 실패 기록이 남아 있으면 이번 실행에서도 tick_ob 를 하지 않는다.
+    # (실패는 '이 한 건'이 아니라 정렬 전제 자체가 깨졌다는 신호이므로 사람이 확인해야 한다.)
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM ingest_log WHERE job='ob_verify' AND status='fail'")
+        n_fail = cur.fetchone()[0]
+    ob_ok = n_fail == 0
+    if not ob_ok:
+        print(f"[daily] 이전 호가 검증 실패 {n_fail}건이 남아 있어 tick_ob 를 건너뜁니다.\n"
+              f"        원인 확인 후 해소하려면: "
+              f"DELETE FROM ingest_log WHERE job='ob_verify' AND status='fail';")
+
     for job in ("tick_ob", "nxt_tick", "krx_min", "nxt_min"):
         if _bytes >= budget:
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
+        if job == "tick_ob" and not ob_ok:
+            continue
         print()
         # 한도(quota) 또는 인증 차단(blocked)에 걸리면 다음 job 으로 넘어가 봐야 헛호출이다.
         if run(conn, job, budget) in ("quota", "blocked"):
             print(f"\n[중단] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
+        if job == "tick_ob":
+            # 보강 직후 1종목을 9필드로 되받아 전수 대조한다(약 2MB).
+            # 호가가 엉뚱한 n 에 붙는 사고는 값이 그럴듯해 나중에 발견하기가 가장 어렵다.
+            print()
+            ob_ok = verify_ob(conn)
+            if not ob_ok:
+                print("[daily] 검증 실패가 ingest_log(job='ob_verify', status='fail')에 남았습니다.\n"
+                      "        다음 실행부터 tick_ob 는 자동으로 중단됩니다. 원인 확인 전까지 재개하지 마세요.")
     print(f"\n===== 오늘 총 수신 {_bytes/1e6:.0f}MB =====")
 
 
@@ -511,14 +532,20 @@ def fetch_ob(cur, code, day, market):
     행 정렬 근거: 응답 배열 순서 == 저장된 n (fetch_tick 이 enumerate 인덱스를 n 으로 쓴다).
     안전장치: 저장된 seq(F16604)와 응답의 seq 를 대조해 어긋나면 ApiError 로 중단한다.
     """
-    # 이미 채워져 있으면 API 를 부르지 않는다(중복 실행·이미 9필드로 받은 날 대비)
-    cur.execute("SELECT ask1 FROM nxt_tick WHERE trade_date=%s AND code=%s ORDER BY n LIMIT 1",
-                (day, code))
-    r0 = cur.fetchone()
-    if r0 is None:
+    # --- API 를 부르기 전에 거를 것들 (헛호출 방지) ---
+    cur.execute("SELECT COUNT(*), SUM(ask1 IS NOT NULL), SUM(seq IS NOT NULL) "
+                "FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+    n_rows, n_ask, n_seq = cur.fetchone()
+    if not n_rows:
         raise Unavailable("nxt_tick 에 해당 (날짜,종목) 데이터가 없음")
-    if r0[0] is not None:
+    if n_ask:
         return 0, 0                       # 이미 호가 있음 -> 호출 없이 완료 처리
+    if n_seq != n_rows:
+        # seq 가 없으면 행 정렬을 검증할 방법이 없다(seq 는 2026-07-19 수집분부터 있다).
+        # 검증 못 하는 UPDATE 는 하지 않는다 -- 호가가 엉뚱한 체결에 붙어도 값이 그럴듯해서
+        # 나중에 발견하기가 가장 어렵다. 이 구간은 5필드로 둔다(또는 전체 재수집).
+        raise Unavailable(f"seq 없는 행 {n_rows - int(n_seq or 0):,}/{n_rows:,} "
+                          "— 정렬 검증 불가로 호가 보강 건너뜀(2026-07-19 이전 수집분)")
 
     fam = FAM_NXT[market]
     url = f"/stock/{fam}/tick_date"
@@ -533,20 +560,111 @@ def fetch_ob(cur, code, day, market):
         v = r.get(k)
         return int(v) if v not in (None, "") else None
 
-    ups = []
+    ups, unverified = [], 0
     for n, r in enumerate(rows):
         if n not in stored:               # 저장 시 걸러낸 행(예상체결·수량0)
             continue
         seq = num(r, "F16604")
-        if stored[n] is not None and seq is not None and stored[n] != seq:
+        if stored[n] is None or seq is None:
+            unverified += 1               # 검증 불가 -- 아래에서 전체를 거부한다
+        elif stored[n] != seq:
             raise ApiError(f"{day} {code} n={n}: 일련번호 불일치(저장 {stored[n]} != 응답 {seq}). "
                            "행 정렬이 어긋났습니다 — 이 건은 전체 재수집이 필요합니다.")
         ups.append((num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"),
                     day, code, n))
+    # 한 행이라도 seq 로 대조하지 못했으면 UPDATE 하지 않는다.
+    # 전종목·전행 seq 대조가 이 백필의 유일한 정렬 보증이므로 예외를 두지 않는다.
+    if unverified:
+        raise Unavailable(f"{unverified:,}행이 seq 로 검증되지 않음(저장 또는 응답에 seq 없음) "
+                          "— 호가 보강 건너뜀")
     for i in range(0, len(ups), 5000):
         cur.executemany("UPDATE nxt_tick SET ask1=%s, bid1=%s, ask_qty1=%s, bid_qty1=%s "
                         "WHERE trade_date=%s AND code=%s AND n=%s", ups[i:i + 5000])
     return len(ups), nb
+
+
+def verify_ob(conn, samples=1):
+    """호가 보강(tick_ob)이 올바른 n 에 붙었는지 표본 검증. 하루 1종목이면 충분하다.
+
+    tick_ob 는 '응답 배열 순서 == 저장된 n' 을 전제로 UPDATE 한다. 이 전제가 깨지면
+    호가가 엉뚱한 체결에 붙는데, 값이 그럴듯해서 나중에 발견하기가 가장 어렵다.
+    그래서 9필드 전체를 다시 받아 n 으로 조인하고, 기존 5필드까지 전부 대조한다.
+    (기존 5필드가 어긋나면 그건 정렬이 통째로 밀렸다는 뜻이다.)
+
+    반환: True(합격) / False(불일치 발견 -- 호출부가 tick_ob 를 멈춘다)
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT b.code, b.trade_date, u.market FROM ingest_log b "
+            "JOIN nxt_universe u ON u.code=b.code AND u.trade_date=b.trade_date "
+            "LEFT JOIN ingest_log v ON v.job='ob_verify' AND v.code=b.code "
+            "                      AND v.trade_date=b.trade_date "
+            "WHERE b.job='tick_ob' AND b.status='ok' AND b.n_rows > 0 "   # 실제 UPDATE 한 것만
+            "  AND b.trade_date >= %s AND v.status IS NULL "
+            "ORDER BY b.trade_date DESC, RAND() LIMIT %s", (tick_floor(), samples))
+        cands = cur.fetchall()
+    if not cands:
+        print("[verify] 검증 대상 없음(아직 tick_ob 로 보강한 건이 없거나 모두 검증됨)")
+        return True
+
+    all_ok = True
+    for code, day, market in cands:
+        url = f"/stock/{FAM_NXT[market]}/tick_date"
+        try:
+            rows, nb = call(url, {"jcode": code, "edate": day.strftime("%Y%m%d"),
+                                  "data_list": ",".join(TICK_FIELDS)})     # 9필드 전체
+        except Unavailable as exc:
+            print(f"[verify] {day} {code}: 조회 불가({exc}) — 건너뜁니다")
+            continue
+        check_fields(rows, TICK_FIELDS, url)
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT n, seq, ts, price, qty, side, ask1, bid1, ask_qty1, bid_qty1 "
+                        "FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+            stored = {r[0]: r[1:] for r in cur.fetchall()}
+
+        def num(r, k):
+            v = r.get(k)
+            return int(v) if v not in (None, "") else None
+
+        checked = mismatch = 0
+        first_bad = None
+        for n, r in enumerate(rows):
+            ts = int(r["F15019"] or 0)
+            if ts <= 0 or ts > 23_59_59_99:      # fetch_tick 과 동일한 필터
+                continue
+            qty = int(r["F15020"] or 0)
+            if qty <= 0:
+                continue
+            if n not in stored:
+                continue
+            want = (num(r, "F16604"), ts, int(r["F15001"] or 0), qty, num(r, "F15022"),
+                    num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"))
+            checked += 1
+            if tuple(stored[n]) != want:
+                mismatch += 1
+                if first_bad is None:
+                    first_bad = (n, tuple(stored[n]), want)
+
+        status = "ok" if mismatch == 0 else "fail"
+        with conn.cursor() as cur:
+            log_done(cur, "ob_verify", code, day, status, checked, nb,
+                     "" if not mismatch else f"불일치 {mismatch}/{checked}")
+        conn.commit()
+
+        if mismatch:
+            all_ok = False
+            n, got, want = first_bad
+            print(f"\n{'!'*70}")
+            print(f"[verify 실패] {day} {code}: {mismatch:,}/{checked:,} 행 불일치")
+            print(f"  n={n}  저장값 {got}")
+            print(f"           재조회 {want}")
+            print(f"  (순서: seq, ts, price, qty, side, ask1, bid1, ask_qty1, bid_qty1)")
+            print("  tick_ob 의 행 정렬 전제가 깨졌을 수 있습니다. 호가 보강을 중단합니다.")
+            print(f"{'!'*70}\n")
+        else:
+            print(f"[verify] {day} {code}: {checked:,}행 전부 일치 (9필드 전수 대조) — 합격")
+    return all_ok
 
 
 def fetch_bar(cur, code, day, market, venue):
