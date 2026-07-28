@@ -332,6 +332,33 @@ def refresh_universe(conn, sdate="20250301"):
     return added
 
 
+def mark_backfill(conn, sdate):
+    """sdate 이후 기수집(ok) 틱을 재수집 대상으로 되돌린다(필드 추가 후 과거분 보강용).
+
+    ingest_log 행만 지운다. 데이터(nxt_tick)는 그대로 두고, 재수집 시 fetch_tick 이
+    (날짜,종목) 단위로 DELETE 후 재삽입하므로 중복·부분저장이 생기지 않는다.
+    보관창 밖 날짜는 어차피 못 받으므로 대상에서 뺀다.
+    """
+    day = dt.date(int(sdate[:4]), int(sdate[4:6]), int(sdate[6:]))
+    floor = tick_floor()
+    if day < floor:
+        print(f"[backfill] {day} 는 보관 하한({floor})보다 이전이라 재수집 불가 → {floor} 로 올립니다.")
+        day = floor
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*), COUNT(DISTINCT trade_date), MIN(trade_date), MAX(trade_date) "
+                    "FROM ingest_log WHERE job='nxt_tick' AND status='ok' AND trade_date >= %s", (day,))
+        n, nd, mn, mx = cur.fetchone()
+        if not n:
+            print(f"[backfill] {day} 이후 재수집 대상 없음")
+            return
+        cur.execute("DELETE FROM ingest_log WHERE job='nxt_tick' AND status='ok' AND trade_date >= %s",
+                    (day,))
+    conn.commit()
+    print(f"[backfill] {mn}~{mx} {nd}거래일 · {n:,}콜을 재수집 대상으로 되돌렸습니다.")
+    print(f"           예상 {n * AVG_BYTES['nxt_tick'] / 1e9:.0f}GB. 틱은 오래된 날부터 처리하므로 "
+          f"이 구간이 먼저 채워진 뒤 전진 수집이 이어집니다.")
+
+
 def daily(conn, budget):
     """일일 러너: 유니버스 갱신 -> 우선순위대로 예산 소진까지 수집.
 
@@ -651,6 +678,10 @@ def main():
                     help="일일 러너: 유니버스 증분 갱신 + 우선순위대로 예산 소진까지 수집")
     ap.add_argument("--refresh-universe", action="store_true",
                     help="신규 거래일만 유니버스에 추가(수집은 안 함)")
+    ap.add_argument("--backfill-from", metavar="YYYYMMDD",
+                    help="이 날짜 이후 기수집(ok) 틱의 ingest_log 를 지워 재수집 대상으로 되돌린다. "
+                         "필드를 추가한 뒤 과거분을 새 필드로 다시 받을 때 사용. "
+                         "데이터는 재수집 시 (날짜,종목) 단위로 DELETE 후 재삽입되므로 안전하다.")
     ap.add_argument("--init-calendar", action="store_true")
     ap.add_argument("--load-universe", metavar="CSV")
     ap.add_argument("--plan", action="store_true")
@@ -671,6 +702,8 @@ def main():
             load_universe(conn, args.load_universe)
         if args.refresh_universe:
             refresh_universe(conn, args.sdate)
+        if args.backfill_from:
+            mark_backfill(conn, args.backfill_from)
         if args.daily:
             daily(conn, args.budget)
         if args.plan:
@@ -678,7 +711,7 @@ def main():
         if args.job:
             run(conn, args.job, args.budget)
         if not any([args.init_calendar, args.load_universe, args.refresh_universe,
-                    args.daily, args.plan, args.job]):
+                    args.backfill_from, args.daily, args.plan, args.job]):
             ap.print_help()
     except Blocked as exc:               # --daily 밖의 경로(--refresh-universe 등)에서 올라온 것
         print(f"\n[STOP] {exc}")
