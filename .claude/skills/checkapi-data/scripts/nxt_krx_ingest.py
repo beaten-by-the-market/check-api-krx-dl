@@ -18,12 +18,14 @@
     hist_info 등 시계열은 제한이 있어 달력 조회에만 간격을 둔다.
 
 사용
-  # 매일 이것 하나만 돌리면 된다 (신규 거래일 자동 편입 -> 틱 -> KRX 1분봉 -> NXT 1분봉)
+  # 매일 이것 하나만 돌리면 된다
+  # (신규 거래일 편입 -> 호가보강 -> 틱 -> KRX 1분봉 -> NXT 1분봉)
   python nxt_krx_ingest.py --daily
 
   python nxt_krx_ingest.py --plan                          # 남은 작업량·예상 용량/일수
   python nxt_krx_ingest.py --refresh-universe              # 신규 거래일만 편입
-  python nxt_krx_ingest.py --job nxt_tick                  # 개별 작업만
+  python nxt_krx_ingest.py --job tick_ob                   # 개별 작업만(호가 보강)
+  python nxt_krx_ingest.py --job nxt_tick
   python nxt_krx_ingest.py --daily --budget 300000000      # 오늘 남은 한도만큼만
 
 최초 1회 (이미 완료)
@@ -67,6 +69,10 @@ TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022",   # 일련번�
 BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
               "F20008_02", "F20010_02", "F20011_02"]            # 시각·시고저종·거래량·거래대금
 
+# 호가 보강(tick_ob)용. 이미 받아둔 틱에 호가 4개만 채울 때는 전체를 다시 받을 필요가 없다.
+# 키(F16604)로 행 정렬을 검증하며 UPDATE 한다 -> 9필드 전체 재수집 대비 약 44% 절약.
+OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
+
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
@@ -74,7 +80,7 @@ FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 TICK_RETENTION_DAYS = 105
 
 # 콜당 평균 응답 바이트(표본 실측) -- --plan 추정에만 쓴다.
-AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300}
+AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000}
 
 DAILY_LIMIT = 1_000_000_000
 DEFAULT_BUDGET = 900_000_000     # 일 한도의 90%에서 스스로 멈춘다
@@ -386,7 +392,9 @@ def daily(conn, budget):
         print(f"[STOP] 유니버스 갱신 실패: {exc}\n       수집을 진행하지 않습니다(불완전 유니버스 방지).")
         return
 
-    for job in ("nxt_tick", "krx_min", "nxt_min"):
+    # tick_ob(호가 보강)를 먼저 돌린다: 대상이 보관창 안으로 한정돼 스스로 소진되고,
+    # 콜당 비용이 전체 재수집의 절반이라 빨리 끝난다. 미루면 그대로 만료된다.
+    for job in ("tick_ob", "nxt_tick", "krx_min", "nxt_min"):
         if _bytes >= budget:
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
@@ -427,6 +435,19 @@ def targets(conn, job):
                 "WHERE l.status IS NULL AND t.status IS NULL "
                 "ORDER BY u.trade_date DESC, u.code ASC",
                 ("nxt_min",))
+        elif job == "tick_ob":
+            # 이미 틱을 받아둔 (날짜,종목) 중 보관창 안이면서 아직 호가 보강 안 한 것.
+            # 최신 날짜부터 처리한다(DESC): 전진 수집이 5/19+ 를 채우므로, 보강도 5/18 에서
+            # 거꾸로 내려와야 두 구간이 이어붙어 끊김 없는 호가 포함 블록이 된다.
+            # 오래된 날부터 하면 하한선과 경주하다 중간에 구멍이 남는다.
+            cur.execute(
+                "SELECT l.code, l.trade_date, u.market FROM ingest_log l "
+                "JOIN nxt_universe u ON u.code=l.code AND u.trade_date=l.trade_date "
+                "LEFT JOIN ingest_log b ON b.job='tick_ob' AND b.code=l.code "
+                "                      AND b.trade_date=l.trade_date "
+                "WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s "
+                "  AND b.status IS NULL "
+                "ORDER BY l.trade_date DESC, l.code ASC", (tick_floor(),))
         elif job == "krx_min":
             # (D) 와 (D+1) 의 합집합. NXT 거래종목 집합이 날마다 거의 같아 합집합은 약 1.05배뿐이다.
             cur.execute(
@@ -482,6 +503,50 @@ def fetch_tick(cur, code, day, market):
                 "ask1, bid1, ask_qty1, bid_qty1) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
     return len(recs), nb
+
+
+def fetch_ob(cur, code, day, market):
+    """이미 받아둔 틱에 호가 4개만 채운다(전체 재수집 대신 UPDATE).
+
+    행 정렬 근거: 응답 배열 순서 == 저장된 n (fetch_tick 이 enumerate 인덱스를 n 으로 쓴다).
+    안전장치: 저장된 seq(F16604)와 응답의 seq 를 대조해 어긋나면 ApiError 로 중단한다.
+    """
+    # 이미 채워져 있으면 API 를 부르지 않는다(중복 실행·이미 9필드로 받은 날 대비)
+    cur.execute("SELECT ask1 FROM nxt_tick WHERE trade_date=%s AND code=%s ORDER BY n LIMIT 1",
+                (day, code))
+    r0 = cur.fetchone()
+    if r0 is None:
+        raise Unavailable("nxt_tick 에 해당 (날짜,종목) 데이터가 없음")
+    if r0[0] is not None:
+        return 0, 0                       # 이미 호가 있음 -> 호출 없이 완료 처리
+
+    fam = FAM_NXT[market]
+    url = f"/stock/{fam}/tick_date"
+    rows, nb = call(url, {"jcode": code, "edate": day.strftime("%Y%m%d"),
+                          "data_list": ",".join(OB_FIELDS)})
+    check_fields(rows, OB_FIELDS, url)
+
+    cur.execute("SELECT n, seq FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+    stored = dict(cur.fetchall())
+
+    def num(r, k):
+        v = r.get(k)
+        return int(v) if v not in (None, "") else None
+
+    ups = []
+    for n, r in enumerate(rows):
+        if n not in stored:               # 저장 시 걸러낸 행(예상체결·수량0)
+            continue
+        seq = num(r, "F16604")
+        if stored[n] is not None and seq is not None and stored[n] != seq:
+            raise ApiError(f"{day} {code} n={n}: 일련번호 불일치(저장 {stored[n]} != 응답 {seq}). "
+                           "행 정렬이 어긋났습니다 — 이 건은 전체 재수집이 필요합니다.")
+        ups.append((num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"),
+                    day, code, n))
+    for i in range(0, len(ups), 5000):
+        cur.executemany("UPDATE nxt_tick SET ask1=%s, bid1=%s, ask_qty1=%s, bid_qty1=%s "
+                        "WHERE trade_date=%s AND code=%s AND n=%s", ups[i:i + 5000])
+    return len(ups), nb
 
 
 def fetch_bar(cur, code, day, market, venue):
@@ -540,6 +605,8 @@ def run(conn, job, budget):
                 try:
                     if job == "nxt_tick":
                         n, nb = fetch_tick(cur, code, day, market)
+                    elif job == "tick_ob":
+                        n, nb = fetch_ob(cur, code, day, market)
                     elif job == "nxt_min":
                         n, nb = fetch_bar(cur, code, day, market, "NXT")
                     else:
@@ -626,7 +693,7 @@ def observed_avg(conn, job):
     """이미 받은 콜의 실측 평균 바이트. 표본이 적으면 None(사전 추정치로 대체)."""
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*), AVG(n_bytes) FROM ingest_log "
-                    "WHERE job=%s AND status='ok'", (job,))
+                    "WHERE job=%s AND status='ok' AND n_bytes > 0", (job,))
         n, avg = cur.fetchone()
     return (float(avg), n) if n and n >= 300 else (None, n or 0)
 
@@ -634,7 +701,7 @@ def observed_avg(conn, job):
 def plan(conn):
     print(f"틱 보관 하한(오늘 기준) : {tick_floor()}  — 이보다 오래된 날의 체결은 API에 없습니다.\n")
     total = 0
-    for job in ("nxt_tick", "krx_min", "nxt_min"):
+    for job in ("tick_ob", "nxt_tick", "krx_min", "nxt_min"):
         n = len(targets(conn, job))
         avg, nsample = observed_avg(conn, job)
         src = f"실측 {nsample:,}콜" if avg else "사전추정"
@@ -644,7 +711,9 @@ def plan(conn):
         print(f"  {job:9} 남은 {n:>8,}콜 x {avg/1000:>6.0f}KB({src:>12}) = {gb:>5.1f}GB "
               f"({gb:>4.1f}일치 한도)")
     print(f"  {'합계':9} {'':>44} {total:>5.1f}GB  ({total:.0f}일)")
-    print("\n권장 순서: nxt_tick(소멸성) -> krx_min -> nxt_min")
+    print("\n권장 순서: tick_ob(호가보강·만료임박) -> nxt_tick(소멸성) -> krx_min -> nxt_min")
+    print("  tick_ob 는 이미 받아둔 틱에 호가 4개만 UPDATE 한다(전체 재수집 대비 약 44% 절약).")
+    print("  대상은 보관창 안으로 한정돼 스스로 소진되고, 최신 날짜부터 처리해 전진 구간과 이어붙는다.")
     print("주의: 표본 300콜 미만이면 사전추정치입니다. 코드 오름차순 처리라 초반 표본은 "
           "대형주에 쏠려 과대추정되는 경향이 있습니다.")
 
@@ -671,7 +740,7 @@ def main():
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
-    ap.add_argument("--job", choices=["nxt_tick", "krx_min", "nxt_min"])
+    ap.add_argument("--job", choices=["tick_ob", "nxt_tick", "krx_min", "nxt_min"])
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help=f"이번 실행에서 받을 최대 응답 바이트 (기본 {DEFAULT_BUDGET:,}, 일 한도 {DAILY_LIMIT:,})")
     ap.add_argument("--daily", action="store_true",
