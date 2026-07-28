@@ -338,31 +338,41 @@ def refresh_universe(conn, sdate="20250301"):
     return added
 
 
-def mark_backfill(conn, sdate):
-    """sdate 이후 기수집(ok) 틱을 재수집 대상으로 되돌린다(필드 추가 후 과거분 보강용).
+def mark_backfill(conn, sdate, edate=None):
+    """[sdate, edate] 구간의 기수집(ok) 틱을 전체 재수집 대상으로 되돌린다.
 
     ingest_log 행만 지운다. 데이터(nxt_tick)는 그대로 두고, 재수집 시 fetch_tick 이
     (날짜,종목) 단위로 DELETE 후 재삽입하므로 중복·부분저장이 생기지 않는다.
     보관창 밖 날짜는 어차피 못 받으므로 대상에서 뺀다.
+
+    edate 를 주면 구간을 닫는다. seq 가 있는 구간은 tick_ob(호가만 UPDATE, 절반 비용)로
+    처리하는 게 낫고, seq 가 없어 검증이 불가능한 구간만 이 전체 재수집이 필요하다.
     """
-    day = dt.date(int(sdate[:4]), int(sdate[4:6]), int(sdate[6:]))
+    def _d(s):
+        return dt.date(int(s[:4]), int(s[4:6]), int(s[6:]))
+
+    day = _d(sdate)
     floor = tick_floor()
     if day < floor:
         print(f"[backfill] {day} 는 보관 하한({floor})보다 이전이라 재수집 불가 → {floor} 로 올립니다.")
         day = floor
+    where = "job='nxt_tick' AND status='ok' AND trade_date >= %s"
+    args = [day]
+    if edate:
+        where += " AND trade_date <= %s"
+        args.append(_d(edate))
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*), COUNT(DISTINCT trade_date), MIN(trade_date), MAX(trade_date) "
-                    "FROM ingest_log WHERE job='nxt_tick' AND status='ok' AND trade_date >= %s", (day,))
+                    f"FROM ingest_log WHERE {where}", args)
         n, nd, mn, mx = cur.fetchone()
         if not n:
-            print(f"[backfill] {day} 이후 재수집 대상 없음")
+            print(f"[backfill] {day}{'~' + str(_d(edate)) if edate else ' 이후'} 재수집 대상 없음")
             return
-        cur.execute("DELETE FROM ingest_log WHERE job='nxt_tick' AND status='ok' AND trade_date >= %s",
-                    (day,))
+        cur.execute(f"DELETE FROM ingest_log WHERE {where}", args)
     conn.commit()
-    print(f"[backfill] {mn}~{mx} {nd}거래일 · {n:,}콜을 재수집 대상으로 되돌렸습니다.")
-    print(f"           예상 {n * AVG_BYTES['nxt_tick'] / 1e9:.0f}GB. 틱은 오래된 날부터 처리하므로 "
-          f"이 구간이 먼저 채워진 뒤 전진 수집이 이어집니다.")
+    print(f"[backfill] {mn}~{mx} {nd}거래일 · {n:,}콜을 전체 재수집 대상으로 되돌렸습니다.")
+    print(f"           예상 {n * 1.56 / 1000:.1f}GB(9필드). 틱은 오래된 날부터 처리하므로 "
+          f"이 구간이 먼저 채워집니다.")
 
 
 def daily(conn, budget):
@@ -392,8 +402,6 @@ def daily(conn, budget):
         print(f"[STOP] 유니버스 갱신 실패: {exc}\n       수집을 진행하지 않습니다(불완전 유니버스 방지).")
         return
 
-    # tick_ob(호가 보강)를 먼저 돌린다: 대상이 보관창 안으로 한정돼 스스로 소진되고,
-    # 콜당 비용이 전체 재수집의 절반이라 빨리 끝난다. 미루면 그대로 만료된다.
     # 과거 검증 실패 기록이 남아 있으면 이번 실행에서도 tick_ob 를 하지 않는다.
     # (실패는 '이 한 건'이 아니라 정렬 전제 자체가 깨졌다는 신호이므로 사람이 확인해야 한다.)
     with conn.cursor() as cur:
@@ -405,7 +413,21 @@ def daily(conn, budget):
               f"        원인 확인 후 해소하려면: "
               f"DELETE FROM ingest_log WHERE job='ob_verify' AND status='fail';")
 
-    for job in ("tick_ob", "nxt_tick", "krx_min", "nxt_min"):
+    # 틱 계열 두 작업(tick_ob·nxt_tick)의 순서는 '가장 먼저 만료되는 쪽'이 앞선다.
+    # 둘 다 보관창 안 데이터를 다루므로 고정 순서를 두면 한쪽이 만료될 때까지 굶는다.
+    # 각 작업의 가장 오래된 대상 날짜를 비교해 매 실행마다 스스로 정한다.
+    tick_jobs = ["tick_ob", "nxt_tick"] if ob_ok else ["nxt_tick"]
+    oldest = {}
+    for j in tick_jobs:
+        t = targets(conn, j)
+        oldest[j] = min((row[1] for row in t), default=None)
+    tick_jobs = [j for j in tick_jobs if oldest[j] is not None]
+    tick_jobs.sort(key=lambda j: oldest[j])
+    if len(tick_jobs) == 2:
+        print(f"[daily] 만료 임박 순서: "
+              + " -> ".join(f"{j}(가장 오래된 대상 {oldest[j]})" for j in tick_jobs))
+
+    for job in tick_jobs + ["krx_min", "nxt_min"]:
         if _bytes >= budget:
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
@@ -865,6 +887,8 @@ def main():
                     help="일일 러너: 유니버스 증분 갱신 + 우선순위대로 예산 소진까지 수집")
     ap.add_argument("--refresh-universe", action="store_true",
                     help="신규 거래일만 유니버스에 추가(수집은 안 함)")
+    ap.add_argument("--backfill-to", metavar="YYYYMMDD",
+                    help="--backfill-from 과 함께 구간을 닫는다(생략하면 이후 전부)")
     ap.add_argument("--backfill-from", metavar="YYYYMMDD",
                     help="이 날짜 이후 기수집(ok) 틱의 ingest_log 를 지워 재수집 대상으로 되돌린다. "
                          "필드를 추가한 뒤 과거분을 새 필드로 다시 받을 때 사용. "
@@ -890,7 +914,7 @@ def main():
         if args.refresh_universe:
             refresh_universe(conn, args.sdate)
         if args.backfill_from:
-            mark_backfill(conn, args.backfill_from)
+            mark_backfill(conn, args.backfill_from, args.backfill_to)
         if args.daily:
             daily(conn, args.budget)
         if args.plan:
