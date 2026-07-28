@@ -76,8 +76,11 @@ OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
-# tick_date 보관 한계(달력 일수). 실측 101일 -> 여유를 두고 105일까지만 시도한다.
-TICK_RETENTION_DAYS = 105
+# tick_date 보관 한계(달력 일수). 실측 101일.
+# 105 로 잡았더니 이미 만료된 날(2026-07-29 기준 4/15, 105일 전)을 대상에 넣어 602콜을
+# 통째로 날렸다. 경계 밖을 넉넉히 잡는 건 손해다 -- 못 받을 날을 두드리는 비용만 든다.
+# 100 이면 실측 경계(101) 안쪽이라 헛시도가 없고, 하루 이틀 손해는 어차피 못 받는 날이다.
+TICK_RETENTION_DAYS = 100
 
 # 콜당 평균 응답 바이트(표본 실측) -- --plan 추정에만 쓴다.
 AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000}
@@ -158,17 +161,26 @@ def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
         msg = json.dumps(payload.get("message") or payload, ensure_ascii=False)
         if "사용량" in msg or "초과" in msg:
             raise Quota(msg)
+        # "1초에 1회로 제한" -- 평소 tick_date 엔 안 걸리지만, 만료된 날짜를 연속으로 두드리면
+        # 유발된다(실측 2026-07-29). 치명적 오류가 아니라 기다렸다 재개할 신호다.
+        if "1초에 1회" in msg or "제한됩니다" in msg:
+            net_fail += 1
+            if net_fail >= tries:
+                raise ApiError(f"{apiurl} {params} -> {msg}")
+            time.sleep(2.0 * net_fail)
+            continue
         # jcode_denied = 상폐/없는 종목 -> 확실히 영구 불가
         if "jcode_denied" in msg:
             raise Unavailable(msg)
         # "performing Query" 는 두 상황에서 온다: (a)보관창 밖=영구불가, (b)대형주 일시 서버오류.
-        # 여기선 구분 불가하므로 몇 번 재시도해 (b)를 흡수하고, 그래도 안 되면 Unavailable 로 올린다.
-        # (b)인데 창 안이면 호출부가 expired 로 굳히지 않고 다음 실행에 재시도하도록 처리한다.
+        # 재시도는 (b)를 흡수하려는 것인데, (a)일 때는 종목마다 9초씩 헛되이 쓰고 rate limit 까지
+        # 유발한다(실측: 만료된 4/15 하루에 602콜 x 9초 = 90분 낭비). 2회로 줄이고, 호출부가
+        # '날짜 단위 만료'를 판정해 나머지 종목을 아예 건너뛰게 한다.
         if "performing Query" in msg:
             net_fail += 1
-            if net_fail >= tries:
+            if net_fail >= 2:
                 raise Unavailable(msg)
-            time.sleep(1.5 * net_fail)
+            time.sleep(1.0)
             continue
         if _is_auth_reject(msg):
             if auth_waited >= AUTH_MAX_WAIT:
@@ -216,6 +228,7 @@ def connect():
 
 
 RETRY_MAX = 3       # 보관창 안 일시오류를 몇 번까지 재시도할지(서버측 결손이면 영원히 성공 못 함)
+DEAD_DATE_STREAK = 5  # 한 날짜에서 이만큼 연속 '조회 불가'면 그 날 전체가 만료된 것으로 본다
 
 
 def _retry_count(cur, job, code, day):
@@ -735,12 +748,20 @@ def run(conn, job, budget):
             pass
 
     COMMIT_EVERY = 25                   # 종목마다 커밋(600회 fsync)하지 않고 묶어서 커밋
+    dead_dates, dead_streak = set(), {}  # 날짜 단위 만료 판정용
     t0, ok, empty, exp = time.time(), 0, 0, 0
     stopped = None                      # 'quota' | 'error' | None(완주)
     try:
         for i, (code, day, market) in enumerate(todo, 1):
             if _bytes >= budget:
                 raise Quota(f"자체 예산 {budget:,}B 도달")
+            # 그 날짜가 이미 만료로 판정났으면 호출하지 않고 바로 기록한다.
+            # (만료된 날은 전 종목이 똑같이 실패한다. 실측: 4/15 하루에 602콜 x 9초 = 90분 낭비)
+            if day in dead_dates:
+                with conn.cursor() as cur:
+                    log_done(cur, job, code, day, "expired", msg="날짜 단위 만료 판정(호출 생략)")
+                exp += 1
+                continue
             with conn.cursor() as cur:
                 try:
                     if job == "nxt_tick":
@@ -772,7 +793,17 @@ def run(conn, job, budget):
                         why = "" if not transient else f" (재시도 {RETRY_MAX}회 소진)"
                         log_done(cur, job, code, day, "expired", msg=str(exc) + why)
                         exp += 1
+                        # 같은 날짜에서 '조회 불가'가 연달아 쌓이면 그 날은 통째로 만료된 것이다.
+                        # 종목별 사정이면 이렇게 연속으로 나오지 않는다.
+                        if "performing Query" in str(exc):
+                            dead_streak[day] = dead_streak.get(day, 0) + 1
+                            if dead_streak[day] >= DEAD_DATE_STREAK:
+                                dead_dates.add(day)
+                                print(f"    [날짜 만료 판정] {day}: 연속 {DEAD_DATE_STREAK}종목 "
+                                      f"조회 불가 -> 이 날짜의 나머지 종목은 호출 없이 건너뜁니다.",
+                                      flush=True)
                 else:
+                    dead_streak.pop(day, None)      # 하나라도 성공하면 연속 카운터 초기화
                     log_done(cur, job, code, day, "ok" if n else "empty", n, nb)
                     ok += 1 if n else 0
                     empty += 0 if n else 1
