@@ -56,7 +56,14 @@ BASE = "https://checkapi.koscom.co.kr"
 # F15019(체결시간)는 초 해상도뿐이다(전체 필드로 받아도 센티초 자리는 항상 00 -- API 원천 한계,
 # 실호출 확인). 같은 초에 몰린 체결의 순서는 F16604(종목별저장일련번호)로 구분한다: KOSCOM 이
 # 원본에서 매기는 단조증가 번호로, 응답 배열 순서(우리 n)와 정확히 일치한다(중복 없음, 실측).
-TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022"]  # 일련번호·체결시간·체결가·체결량·체결성향
+#
+# 호가 4개(F14501/F14531/F14511/F14541)는 체결 시점의 최우선 매도/매수 호가와 잔량이다.
+# 이게 있으면 체결이 매도호가를 쳤는지 매수호가를 쳤는지, 유효 스프레드가 얼마였는지 계산된다.
+# 비용: 5필드 대비 x1.77 (실측). 만료 레이스 순증이 +0.84 -> +0.16 거래일/일로 줄지만 여전히 양수.
+# F15028(시가총액)은 뺐다 -- 13자리 숫자가 매 틱 반복돼 혼자 x0.30을 먹는데,
+# 체결가 x 상장주식수라 틱 하나만 있으면 나머지는 역산된다.
+TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022",   # 일련번호·체결시간·체결가·체결량·체결성향
+               "F14501", "F14531", "F14511", "F14541"]             # 매도호가1·매수호가1·매도잔량1·매수잔량1
 BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
               "F20008_02", "F20010_02", "F20011_02"]            # 시각·시고저종·거래량·거래대금
 
@@ -431,15 +438,22 @@ def fetch_tick(cur, code, day, market):
             continue
         side = r.get("F15022")
         seq = r.get("F16604")               # KOSCOM 원순번(같은 초 안 체결 순서). 응답 배열 순서와 일치.
+
+        def num(k):                          # 호가·잔량은 값이 없을 수 있다(장 시작 전 등)
+            v = r.get(k)
+            return int(v) if v not in (None, "") else None
+
         recs.append((day, code, n, int(seq) if seq not in (None, "") else None,
                      ts, int(r["F15001"] or 0), qty,
-                     int(side) if side not in (None, "") else None))
+                     int(side) if side not in (None, "") else None,
+                     num("F14501"), num("F14531"), num("F14511"), num("F14541")))
     if recs:
         cur.execute("DELETE FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
         for i in range(0, len(recs), 5000):
             cur.executemany(
-                "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
+                "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
+                "ask1, bid1, ask_qty1, bid_qty1) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
     return len(recs), nb
 
 

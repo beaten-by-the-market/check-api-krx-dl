@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS nxt_tick (
   price      INT          NOT NULL,   -- F15001 현재가(체결가)
   qty        INT          NOT NULL,   -- F15020 체결량
   side       TINYINT      NULL,       -- F15022 체결성향 1:B 2:BB 4:S 5:SS 9:대량 10:바스켓 11:신고대량 27:경매매
+  -- 체결 시점의 최우선 호가·잔량(2026-07-28 이후 수집분부터. 그 이전은 NULL).
+  -- 체결가와 비교하면 매도호가를 친 체결인지/매수호가를 친 체결인지, 유효 스프레드가 얼마인지 나온다.
+  ask1       INT          NULL,       -- F14501 매도호가1
+  bid1       INT          NULL,       -- F14531 매수호가1
+  ask_qty1   INT          NULL,       -- F14511 매도호가잔량1
+  bid_qty1   INT          NULL,       -- F14541 매수호가잔량1
   PRIMARY KEY (trade_date, code, n),
   KEY ix_code_ts (code, trade_date, ts)
 ) ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
