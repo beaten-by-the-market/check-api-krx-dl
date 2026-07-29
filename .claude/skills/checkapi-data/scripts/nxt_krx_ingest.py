@@ -229,6 +229,7 @@ def connect():
 
 RETRY_MAX = 3       # 보관창 안 일시오류를 몇 번까지 재시도할지(서버측 결손이면 영원히 성공 못 함)
 DEAD_DATE_STREAK = 5  # 한 날짜에서 이만큼 연속 '조회 불가'면 그 날 전체가 만료된 것으로 본다
+VERIFY_RESERVE = 15_000_000  # tick_ob 예산에서 남겨둘 검증용 몫(9필드 1콜, 대형주 여유 포함)
 
 
 def _retry_count(cur, job, code, day):
@@ -447,18 +448,27 @@ def daily(conn, budget):
         if job == "tick_ob" and not ob_ok:
             continue
         print()
-        # 한도(quota) 또는 인증 차단(blocked)에 걸리면 다음 job 으로 넘어가 봐야 헛호출이다.
-        if run(conn, job, budget) in ("quota", "blocked"):
-            print(f"\n[중단] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
-            break
+        # tick_ob 은 예산에서 VERIFY_RESERVE 를 남겨두고 돌린다. 안 그러면 예산을 다 쓰고
+        # break 로 빠져나가 검증이 영원히 실행되지 않는다(2026-07-30 실측: 1,080콜 보강 후
+        # verify 미실행). 보강해 놓고 검증을 안 하면 안전장치가 있으나 마나다.
+        job_budget = budget - VERIFY_RESERVE if job == "tick_ob" else budget
+        stopped_by = run(conn, job, max(0, job_budget))
         if job == "tick_ob":
-            # 보강 직후 1종목을 9필드로 되받아 전수 대조한다(약 2MB).
+            # 보강 직후 1종목을 9필드로 되받아 전수 대조한다(약 2MB, 유보분에서 지출).
             # 호가가 엉뚱한 n 에 붙는 사고는 값이 그럴듯해 나중에 발견하기가 가장 어렵다.
             print()
-            ob_ok = verify_ob(conn)
+            try:
+                ob_ok = verify_ob(conn)
+            except (Quota, Blocked) as exc:
+                print(f"[verify] 예산/차단으로 검증 생략: {exc}")
+                ob_ok = True                  # 검증을 못 했을 뿐, 실패가 아니다
             if not ob_ok:
                 print("[daily] 검증 실패가 ingest_log(job='ob_verify', status='fail')에 남았습니다.\n"
                       "        다음 실행부터 tick_ob 는 자동으로 중단됩니다. 원인 확인 전까지 재개하지 마세요.")
+        # 한도(quota)·인증차단(blocked)이면 다음 job 으로 넘어가 봐야 헛호출이다.
+        if stopped_by in ("quota", "blocked"):
+            print(f"\n[중단] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
+            break
     print(f"\n===== 오늘 총 수신 {_bytes/1e6:.0f}MB =====")
 
 
