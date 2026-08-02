@@ -145,6 +145,19 @@ def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
             with urllib.request.urlopen(req, timeout=300) as resp:
                 raw = resp.read()
         except Exception as exc:                                 # 네트워크·타임아웃만 재시도
+            # HTTP 502(Proxy Error)는 응답이 너무 커서 프록시가 못 넘긴 경우다. 서버는 응답을
+            # 만들어 놓고 실패하므로 **우리가 못 받아도 KOSCOM 은 사용량으로 계산한다**.
+            # (2026-08-03 실측: 삼성전자 5/06 을 6회 재시도했다가 우리 집계 461MB 인데 API 는
+            #  1GB 초과 -- 90MB짜리 응답 x 6회 = 540MB 를 받지도 못하고 태웠다.)
+            # 재시도해도 크기는 그대로라 성공 가능성이 없다 -> 한 번만 더 해보고 포기한다.
+            if "502" in str(exc):
+                if net_fail >= 1:
+                    raise Unavailable(f"HTTP 502(응답 과대) — 재시도해도 크기는 같아 포기: {exc}")
+                net_fail += 1
+                print(f"    [502 Proxy Error] 응답이 커서 프록시가 실패 — 1회만 재시도 "
+                      f"(재시도도 한도를 소모하므로 더는 반복하지 않습니다)", flush=True)
+                time.sleep(3)
+                continue
             net_fail += 1
             if net_fail >= NET_TRIES:
                 raise ApiError(f"{apiurl} {params} -> {exc}")
