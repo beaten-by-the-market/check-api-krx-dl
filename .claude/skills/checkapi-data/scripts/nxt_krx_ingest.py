@@ -146,9 +146,15 @@ def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
                 raw = resp.read()
         except Exception as exc:                                 # 네트워크·타임아웃만 재시도
             net_fail += 1
-            if net_fail >= tries:
+            if net_fail >= NET_TRIES:
                 raise ApiError(f"{apiurl} {params} -> {exc}")
-            time.sleep(1.5 * net_fail)
+            # 'Remote end closed connection' 은 대량 연속 호출 뒤 서버가 잠시 끊는 것이라
+            # 몇 초 기다리면 대개 풀린다. 9초 만에 포기하면 그날 남은 예산을 통째로 버린다
+            # (2026-08-02 실측: 838콜 시점에 끊겨 171MB 를 못 썼다). 지수 백오프로 버틴다.
+            wait = min(60, 2 ** net_fail)                        # 2,4,8,16,32,60...
+            print(f"    [네트워크 오류 {net_fail}/{NET_TRIES}] {str(exc)[:60]} — {wait}초 후 재시도",
+                  flush=True)
+            time.sleep(wait)
             continue
 
         _bytes += len(raw)
@@ -230,6 +236,7 @@ def connect():
 RETRY_MAX = 3       # 보관창 안 일시오류를 몇 번까지 재시도할지(서버측 결손이면 영원히 성공 못 함)
 DEAD_DATE_STREAK = 5  # 한 날짜에서 이만큼 연속 '조회 불가'면 그 날 전체가 만료된 것으로 본다
 VERIFY_RESERVE = 15_000_000  # tick_ob 예산에서 남겨둘 검증용 몫(9필드 1콜, 대형주 여유 포함)
+NET_TRIES = 7       # 네트워크 오류 재시도 횟수(지수 백오프 2~60초, 총 2분 이상 버틴다)
 
 
 def _retry_count(cur, job, code, day):
@@ -459,9 +466,12 @@ def daily(conn, budget):
             print()
             try:
                 ob_ok = verify_ob(conn)
-            except (Quota, Blocked) as exc:
-                print(f"[verify] 예산/차단으로 검증 생략: {exc}")
-                ob_ok = True                  # 검증을 못 했을 뿐, 실패가 아니다
+            except (Quota, Blocked, ApiError, Unavailable) as exc:
+                # 검증을 '못 한 것'과 검증이 '실패한 것'은 다르다. 네트워크 끊김·한도·차단으로
+                # 검증을 못 돌린 건 수집 결과와 무관하므로 실행을 죽이지 않는다.
+                # (2026-08-02 실측: verify 중 RemoteDisconnected 가 프로세스를 종료시켰다.)
+                print(f"[verify] 검증을 수행하지 못했습니다(수집 결과와 무관): {exc}")
+                ob_ok = True
             if not ob_ok:
                 print("[daily] 검증 실패가 ingest_log(job='ob_verify', status='fail')에 남았습니다.\n"
                       "        다음 실행부터 tick_ob 는 자동으로 중단됩니다. 원인 확인 전까지 재개하지 마세요.")
