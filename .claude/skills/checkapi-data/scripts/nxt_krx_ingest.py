@@ -213,6 +213,23 @@ def check_fields(rows, requested, apiurl):
 
 # ------------------------------------------------------------------ MySQL
 
+def acquire_lock(conn, name="nxt_krx_ingest"):
+    """수집기 중복 실행을 막는다.
+
+    두 프로세스가 동시에 돌면 같은 (날짜,종목) 행을 서로 잠그다 'Lock wait timeout' 으로
+    죽는다(2026-08-02 실측: 수동 실행이 겹쳐 25콜 만에 중단). 21:00 스케줄러와 수동 실행이
+    겹치는 상황이 실제로 생기므로 구조적으로 막는다.
+
+    MySQL GET_LOCK 은 연결이 끊기면 자동 해제되므로 프로세스가 죽어도 잠금이 남지 않는다.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, 0)", (name,))
+        if not cur.fetchone()[0]:
+            raise SystemExit(
+                "이미 다른 수집 프로세스가 실행 중입니다. 동시에 돌리면 서로의 행을 잠가 "
+                "둘 다 실패합니다(Lock wait timeout). 그 프로세스가 끝난 뒤 다시 실행하세요.")
+
+
 def connect():
     try:
         import pymysql
@@ -957,6 +974,9 @@ def main():
         print(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} 시작 =====")
 
     conn = connect()
+    # 수집·백필처럼 nxt_tick 을 쓰는 작업만 잠근다. --plan 같은 읽기 전용은 언제든 되게 둔다.
+    if args.job or args.daily or args.backfill_from:
+        acquire_lock(conn)
     try:
         if args.init_calendar:
             init_calendar(conn, args.sdate, args.edate)
