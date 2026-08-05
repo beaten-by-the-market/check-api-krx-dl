@@ -85,6 +85,8 @@ TICK_RETENTION_DAYS = 100
 # 콜당 평균 응답 바이트(표본 실측) -- --plan 추정에만 쓴다.
 AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000}
 
+# 평시 일 한도. KOSCOM 이 일시적으로 늘려 주기도 한다(2026-08-05~09: 5GB).
+# --daily-limit 로 덮어쓸 수 있다. 안내 문구용이며 실제 상한은 --budget 이다.
 DAILY_LIMIT = 1_000_000_000
 DEFAULT_BUDGET = 900_000_000     # 일 한도의 90%에서 스스로 멈춘다
 
@@ -958,12 +960,15 @@ class _Tee:
 
 
 def main():
+    global DAILY_LIMIT
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
     ap.add_argument("--job", choices=["tick_ob", "nxt_tick", "krx_min", "nxt_min"])
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help=f"이번 실행에서 받을 최대 응답 바이트 (기본 {DEFAULT_BUDGET:,}, 일 한도 {DAILY_LIMIT:,})")
+    ap.add_argument("--daily-limit", type=int, default=DAILY_LIMIT,
+                    help="일 한도(안내 표시용). KOSCOM 한시 상향 기간에 맞춘다.")
     ap.add_argument("--daily", action="store_true",
                     help="일일 러너: 유니버스 증분 갱신 + 우선순위대로 예산 소진까지 수집")
     ap.add_argument("--refresh-universe", action="store_true",
@@ -985,6 +990,8 @@ def main():
         os.makedirs(args.log, exist_ok=True)
         sys.stdout = _Tee(os.path.join(args.log, f"ingest_{dt.date.today():%Y%m%d}.log"))
         print(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} 시작 =====")
+
+    DAILY_LIMIT = args.daily_limit
 
     conn = connect()
     # 수집·백필처럼 nxt_tick 을 쓰는 작업만 잠근다. --plan 같은 읽기 전용은 언제든 되게 둔다.
