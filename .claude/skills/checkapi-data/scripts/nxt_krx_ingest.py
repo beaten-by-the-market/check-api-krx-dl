@@ -193,6 +193,13 @@ def call(apiurl: str, params: dict, timeseries: bool = False, tries: int = 4):
         # jcode_denied = 상폐/없는 종목 -> 확실히 영구 불가
         if "jcode_denied" in msg:
             raise Unavailable(msg)
+        # 'File too large size(>= 500MB)' -- 응답 크기 상한이 500MB 임이 이 메시지로 확인됐다
+        # (2026-08-07 실측, 005930/20260602). 그동안 502 로만 보이던 현상의 정체다.
+        # 그 (종목,일자)는 필드를 줄이지 않는 한 영원히 못 받으므로 재시도가 무의미하다.
+        # ApiError 로 올리면 job 전체가 멈춰 남은 예산이 다른 작업으로 새므로 Unavailable 로 처리한다.
+        # 'File not exists' -- 그날 자료가 아직/아예 없는 경우(예: 당일 장중 조회).
+        if "File too large" in msg or "File not exists" in msg:
+            raise Unavailable(msg)
         # "performing Query" 는 두 상황에서 온다: (a)보관창 밖=영구불가, (b)대형주 일시 서버오류.
         # 재시도는 (b)를 흡수하려는 것인데, (a)일 때는 종목마다 9초씩 헛되이 쓰고 rate limit 까지
         # 유발한다(실측: 만료된 4/15 하루에 602콜 x 9초 = 90분 낭비). 2회로 줄이고, 호출부가
@@ -484,6 +491,16 @@ def daily(conn, budget):
         if _bytes >= budget:
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
+        # 틱은 보관 101일이 지나면 영구 소실되고, 1분봉은 소급 제한이 없다.
+        # 틱 작업이 오류로 멈췄을 때 남은 예산이 1분봉으로 새면 소멸성 자원을 그만큼 잃는다
+        # (2026-08-07 실측: 틱이 1,106MB 에서 멈추자 1분봉이 나머지 3,894MB 를 가져갔다).
+        # -> 틱 대상이 남아 있는 한 1분봉은 시작하지 않는다.
+        if job in ("krx_min", "nxt_min"):
+            tick_left = sum(len(targets(conn, j)) for j in ("tick_ob", "nxt_tick"))
+            if tick_left:
+                print(f"\n[보류] {job} 은 건너뜁니다 — 소멸성인 틱 작업이 {tick_left:,}콜 남아 "
+                      f"있어 1분봉(소급 제한 없음)보다 우선합니다.")
+                continue
         if job == "tick_ob" and not ob_ok:
             continue
         print()
