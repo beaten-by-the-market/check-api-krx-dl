@@ -859,8 +859,16 @@ def run(conn, job, budget):
                               f"(보관창 안, {tries_so_far + 1}/{RETRY_MAX}회 -> 다음 실행에 재시도)",
                               flush=True)
                     else:
-                        why = "" if not transient else f" (재시도 {RETRY_MAX}회 소진)"
-                        log_done(cur, job, code, day, "expired", msg=str(exc) + why)
+                        # 500MB 파일 한계로 못 받은 건은 별도 상태로 남긴다. 만료(우리가 늦어서
+                        # 놓친 것)와 성격이 완전히 달라 -- KOSCOM 측 제약이라 별도 제공을
+                        # 요청할 대상이다. 섞어 두면 나중에 목록을 뽑을 수 없다.
+                        if "too large" in str(exc):
+                            log_done(cur, job, code, day, "toolarge", msg=str(exc))
+                            print(f"    [500MB 초과] {day} {code} — 별도 제공 요청 대상으로 기록",
+                                  flush=True)
+                        else:
+                            why = "" if not transient else f" (재시도 {RETRY_MAX}회 소진)"
+                            log_done(cur, job, code, day, "expired", msg=str(exc) + why)
                         exp += 1
                         # 같은 날짜에서 '조회 불가'가 연달아 쌓이면 그 날은 통째로 만료된 것이다.
                         # 종목별 사정이면 이렇게 연속으로 나오지 않는다.
