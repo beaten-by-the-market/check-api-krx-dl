@@ -65,13 +65,25 @@ BASE = "https://checkapi.koscom.co.kr"
 # F15028(시가총액)은 뺐다 -- 13자리 숫자가 매 틱 반복돼 혼자 x0.30을 먹는데,
 # 체결가 x 상장주식수라 틱 하나만 있으면 나머지는 역산된다.
 TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022",   # 일련번호·체결시간·체결가·체결량·체결성향
-               "F14501", "F14531", "F14511", "F14541"]             # 매도호가1·매수호가1·매도잔량1·매수잔량1
+               "F14501", "F14531", "F14511", "F14541",             # 매도호가1·매수호가1·매도잔량1·매수잔량1
+               "F30614"]                                           # 체결유형(등락구분) -- 아래 설명
 BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
               "F20008_02", "F20010_02", "F20011_02"]            # 시각·시고저종·거래량·거래대금
 
 # 호가 보강(tick_ob)용. 이미 받아둔 틱에 호가 4개만 채울 때는 전체를 다시 받을 필요가 없다.
 # 키(F16604)로 행 정렬을 검증하며 UPDATE 한다 -> 9필드 전체 재수집 대비 약 44% 절약.
 OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
+
+# 등락구분 보강(tick_tt)용. F30614 = '기본/예상/장전시간외/시간외단일가/등락구분'.
+# F15006(등락구분)과 같은 코드계다: 1:상한 2:상승 3:보합 4:하한 5:하락 6~9:기세류.
+#   69 = 실체결이 아닌 값. KOSCOM 명세 원문이 '69:예' 에서 잘려 있어(괄호도 안 닫힘)
+#        명칭을 확정할 수 없다 -- 같은 코드계인 F15317 은 '69:예상체결' 이지만,
+#        단말 화면 1313 의 대비 컬럼에는 '예'(기세)로 표시된다는 확인이 있다.
+#        어느 쪽이든 체결이 아니므로 거래량에서 제외한다는 처리는 같다.
+# 69 를 구분하지 않으면
+# SUM(qty) 가 0.3~0.9% 과대계상된다(실측: 005930 5/06 에서 정규세션 밖 3,733행/13.8만주).
+# 2/3/5 는 직전 대비 방향이라 세션과 무관하게 온종일 분포하고 종목마다 비중이 크게 다르다.
+TT_FIELDS = ["F16604", "F30614"]
 
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
@@ -83,7 +95,7 @@ FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 TICK_RETENTION_DAYS = 100
 
 # 콜당 평균 응답 바이트(표본 실측) -- --plan 추정에만 쓴다.
-AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000}
+AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000, "tick_tt": 350_000}
 
 # 평시 일 한도. KOSCOM 이 일시적으로 늘려 주기도 한다(2026-08-05~09: 5GB).
 # --daily-limit 로 덮어쓸 수 있다. 안내 문구용이며 실제 상한은 --budget 이다.
@@ -476,7 +488,7 @@ def daily(conn, budget):
     # 틱 계열 두 작업(tick_ob·nxt_tick)의 순서는 '가장 먼저 만료되는 쪽'이 앞선다.
     # 둘 다 보관창 안 데이터를 다루므로 고정 순서를 두면 한쪽이 만료될 때까지 굶는다.
     # 각 작업의 가장 오래된 대상 날짜를 비교해 매 실행마다 스스로 정한다.
-    tick_jobs = ["tick_ob", "nxt_tick"] if ob_ok else ["nxt_tick"]
+    tick_jobs = (["tick_ob", "tick_tt", "nxt_tick"] if ob_ok else ["tick_tt", "nxt_tick"])
     oldest = {}
     for j in tick_jobs:
         t = targets(conn, j)
@@ -496,7 +508,7 @@ def daily(conn, budget):
         # (2026-08-07 실측: 틱이 1,106MB 에서 멈추자 1분봉이 나머지 3,894MB 를 가져갔다).
         # -> 틱 대상이 남아 있는 한 1분봉은 시작하지 않는다.
         if job in ("krx_min", "nxt_min"):
-            tick_left = sum(len(targets(conn, j)) for j in ("tick_ob", "nxt_tick"))
+            tick_left = sum(len(targets(conn, j)) for j in ("tick_ob", "tick_tt", "nxt_tick"))
             if tick_left:
                 print(f"\n[보류] {job} 은 건너뜁니다 — 소멸성인 틱 작업이 {tick_left:,}콜 남아 "
                       f"있어 1분봉(소급 제한 없음)보다 우선합니다.")
@@ -573,6 +585,16 @@ def targets(conn, job):
                 "WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s "
                 "  AND b.status IS NULL "
                 "ORDER BY l.trade_date DESC, l.code ASC", (tick_floor(),))
+        elif job == "tick_tt":
+            # 체결유형(F30614) 미보강 + 보관창 안. 최신 날짜부터(전진 구간과 이어붙게).
+            cur.execute(
+                "SELECT l.code, l.trade_date, u.market FROM ingest_log l "
+                "JOIN nxt_universe u ON u.code=l.code AND u.trade_date=l.trade_date "
+                "LEFT JOIN ingest_log b ON b.job='tick_tt' AND b.code=l.code "
+                "                      AND b.trade_date=l.trade_date "
+                "WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s "
+                "  AND b.status IS NULL "
+                "ORDER BY l.trade_date DESC, l.code ASC", (tick_floor(),))
         elif job == "krx_min":
             # (D) 와 (D+1) 의 합집합. NXT 거래종목 집합이 날마다 거의 같아 합집합은 약 1.05배뿐이다.
             cur.execute(
@@ -619,14 +641,15 @@ def fetch_tick(cur, code, day, market):
         recs.append((day, code, n, int(seq) if seq not in (None, "") else None,
                      ts, int(r["F15001"] or 0), qty,
                      int(side) if side not in (None, "") else None,
-                     num("F14501"), num("F14531"), num("F14511"), num("F14541")))
+                     num("F14501"), num("F14531"), num("F14511"), num("F14541"),
+                     num("F30614")))
     if recs:
         cur.execute("DELETE FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
         for i in range(0, len(recs), 5000):
             cur.executemany(
                 "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
-                "ask1, bid1, ask_qty1, bid_qty1) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
+                "ask1, bid1, ask_qty1, bid_qty1, trd_type) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
     return len(recs), nb
 
 
@@ -771,6 +794,53 @@ def verify_ob(conn, samples=1):
     return all_ok
 
 
+def fetch_tt(cur, code, day, market):
+    """이미 받아둔 틱에 체결유형(F30614)만 채운다. fetch_ob 와 같은 방식·같은 안전장치.
+
+    2필드(키+체결유형)만 받으므로 9필드 전체 재수집의 1/3 수준이다.
+    """
+    cur.execute("SELECT COUNT(*), SUM(trd_type IS NOT NULL), SUM(seq IS NOT NULL) "
+                "FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+    n_rows, n_tt, n_seq = cur.fetchone()
+    if not n_rows:
+        raise Unavailable("nxt_tick 에 해당 (날짜,종목) 데이터가 없음")
+    if n_tt:
+        return 0, 0                       # 이미 채워짐 -> 호출 없이 완료 처리
+    if n_seq != n_rows:
+        raise Unavailable(f"seq 없는 행 {n_rows - int(n_seq or 0):,}/{n_rows:,} "
+                          "— 정렬 검증 불가로 체결유형 보강 건너뜀")
+
+    url = f"/stock/{FAM_NXT[market]}/tick_date"
+    rows, nb = call(url, {"jcode": code, "edate": day.strftime("%Y%m%d"),
+                          "data_list": ",".join(TT_FIELDS)})
+    check_fields(rows, TT_FIELDS, url)
+
+    cur.execute("SELECT n, seq FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+    stored = dict(cur.fetchall())
+
+    def num(r, k):
+        v = r.get(k)
+        return int(v) if v not in (None, "") else None
+
+    ups, unverified = [], 0
+    for n, r in enumerate(rows):
+        if n not in stored:
+            continue
+        seq = num(r, "F16604")
+        if stored[n] is None or seq is None:
+            unverified += 1
+        elif stored[n] != seq:
+            raise ApiError(f"{day} {code} n={n}: 일련번호 불일치(저장 {stored[n]} != 응답 {seq}). "
+                           "행 정렬이 어긋났습니다.")
+        ups.append((num(r, "F30614"), day, code, n))
+    if unverified:
+        raise Unavailable(f"{unverified:,}행이 seq 로 검증되지 않음 — 체결유형 보강 건너뜀")
+    for i in range(0, len(ups), 5000):
+        cur.executemany("UPDATE nxt_tick SET trd_type=%s WHERE trade_date=%s AND code=%s AND n=%s",
+                        ups[i:i + 5000])
+    return len(ups), nb
+
+
 def fetch_bar(cur, code, day, market, venue):
     fam = (FAM_NXT if venue == "NXT" else FAM_KRX)[market]
     url = f"/stock/{fam}/intra_date"
@@ -837,6 +907,8 @@ def run(conn, job, budget):
                         n, nb = fetch_tick(cur, code, day, market)
                     elif job == "tick_ob":
                         n, nb = fetch_ob(cur, code, day, market)
+                    elif job == "tick_tt":
+                        n, nb = fetch_tt(cur, code, day, market)
                     elif job == "nxt_min":
                         n, nb = fetch_bar(cur, code, day, market, "NXT")
                     else:
@@ -949,7 +1021,7 @@ def observed_avg(conn, job):
 def plan(conn):
     print(f"틱 보관 하한(오늘 기준) : {tick_floor()}  — 이보다 오래된 날의 체결은 API에 없습니다.\n")
     total = 0
-    for job in ("tick_ob", "nxt_tick", "krx_min", "nxt_min"):
+    for job in ("tick_ob", "tick_tt", "nxt_tick", "krx_min", "nxt_min"):
         n = len(targets(conn, job))
         avg, nsample = observed_avg(conn, job)
         src = f"실측 {nsample:,}콜" if avg else "사전추정"
@@ -989,7 +1061,7 @@ def main():
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
-    ap.add_argument("--job", choices=["tick_ob", "nxt_tick", "krx_min", "nxt_min"])
+    ap.add_argument("--job", choices=["tick_ob", "tick_tt", "nxt_tick", "krx_min", "nxt_min"])
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help=f"이번 실행에서 받을 최대 응답 바이트 (기본 {DEFAULT_BUDGET:,}, 일 한도 {DAILY_LIMIT:,})")
     ap.add_argument("--daily-limit", type=int, default=DAILY_LIMIT,

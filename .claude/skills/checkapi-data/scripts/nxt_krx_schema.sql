@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS nxt_tick (
   bid1       INT          NULL,       -- F14531 매수호가1
   ask_qty1   INT          NULL,       -- F14511 매도호가잔량1
   bid_qty1   INT          NULL,       -- F14541 매수호가잔량1
+  -- F30614 등락구분(F15006 과 같은 코드계). 1:상한 2:상승 3:보합 4:하한 5:하락 6~9:기세류.
+  -- 69 = 실체결 아님. 명세 원문이 '69:예' 에서 잘려 명칭 미확정(F15317 은 '예상체결',
+  -- 단말 1313 대비 컬럼은 '예'=기세). 어느 쪽이든 거래량 제외. 구분하지 않으면 SUM(qty) 가
+  -- 0.3~0.9% 과대계상된다(실측). 2026-08-11 이후 수집분부터 채워진다.
+  trd_type   SMALLINT     NULL,
   PRIMARY KEY (trade_date, code, n),
   KEY ix_code_ts (code, trade_date, ts)
 ) ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
@@ -146,4 +151,7 @@ SELECT
     ELSE                    'AFTER'    -- 15:40~20:00
   END AS session
 FROM nxt_tick
-WHERE qty > 0 AND ts BETWEEN 1 AND 23595999;
+WHERE qty > 0 AND ts BETWEEN 1 AND 23595999
+  -- 69(예상체결)는 실제 체결이 아니므로 제외한다. trd_type 이 NULL 인 과거 수집분은
+  -- 구분할 수 없어 그대로 포함된다(거래량 0.3~0.9% 과대 가능).
+  AND (trd_type IS NULL OR trd_type <> 69);
