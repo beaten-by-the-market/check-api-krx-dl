@@ -66,7 +66,7 @@ BASE = "https://checkapi.koscom.co.kr"
 # 체결가 x 상장주식수라 틱 하나만 있으면 나머지는 역산된다.
 TICK_FIELDS = ["F16604", "F15019", "F15001", "F15020", "F15022",   # 일련번호·체결시간·체결가·체결량·체결성향
                "F14501", "F14531", "F14511", "F14541",             # 매도호가1·매수호가1·매도잔량1·매수잔량1
-               "F30614"]                                           # 체결유형(등락구분) -- 아래 설명
+               "F30614"]                                           # 등락구분 -- 아래 설명
 BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
               "F20008_02", "F20010_02", "F20011_02"]            # 시각·시고저종·거래량·거래대금
 
@@ -74,7 +74,9 @@ BAR_FIELDS = ["F20004_02", "F20005_02", "F20006_02", "F20007_02",
 # 키(F16604)로 행 정렬을 검증하며 UPDATE 한다 -> 9필드 전체 재수집 대비 약 44% 절약.
 OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
 
-# 등락구분 보강(tick_tt)용. F30614 = '기본/예상/장전시간외/시간외단일가/등락구분'.
+# 등락구분 보강용. job 이름 'tick_tt' 는 ingest_log.job 에 이미 저장된 값이라 바꾸지 않는다
+# (바꾸면 기존 로그와 매칭이 끊겨 받아둔 날짜를 다시 받는다).
+# F30614 = '기본/예상/장전시간외/시간외단일가/등락구분'.
 # F15006(등락구분)과 같은 코드계다: 1:상한 2:상승 3:보합 4:하한 5:하락 6~9:기세류.
 #   69 = 실체결이 아닌 값. KOSCOM 명세 원문이 '69:예' 에서 잘려 있어(괄호도 안 닫힘)
 #        명칭을 확정할 수 없다 -- 같은 코드계인 F15317 은 '69:예상체결' 이지만,
@@ -83,7 +85,7 @@ OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
 # 69 를 구분하지 않으면
 # SUM(qty) 가 0.3~0.9% 과대계상된다(실측: 005930 5/06 에서 정규세션 밖 3,733행/13.8만주).
 # 2/3/5 는 직전 대비 방향이라 세션과 무관하게 온종일 분포하고 종목마다 비중이 크게 다르다.
-TT_FIELDS = ["F16604", "F30614"]
+CHG_TYPE_FIELDS = ["F16604", "F30614"]
 
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
@@ -586,7 +588,10 @@ def targets(conn, job):
                 "  AND b.status IS NULL "
                 "ORDER BY l.trade_date DESC, l.code ASC", (tick_floor(),))
         elif job == "tick_tt":
-            # 체결유형(F30614) 미보강 + 보관창 안. 최신 날짜부터(전진 구간과 이어붙게).
+            # 등락구분(F30614) 미보강 + 보관창 안. 오래된 날부터(ASC) 처리한다.
+            # tick_ob 때와 달리 최신부터 갈 이유가 없다 -- 전진 수집이 2026-08-11 부터
+            # F30614 를 직접 받으므로 최신 구간은 저절로 채워진다. 반면 앞쪽(5월 초)은
+            # 보관 하한이 매일 올라와 며칠 안에 영구 소실되므로 그쪽이 급하다.
             cur.execute(
                 "SELECT l.code, l.trade_date, u.market FROM ingest_log l "
                 "JOIN nxt_universe u ON u.code=l.code AND u.trade_date=l.trade_date "
@@ -594,7 +599,7 @@ def targets(conn, job):
                 "                      AND b.trade_date=l.trade_date "
                 "WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s "
                 "  AND b.status IS NULL "
-                "ORDER BY l.trade_date DESC, l.code ASC", (tick_floor(),))
+                "ORDER BY l.trade_date ASC, l.code ASC", (tick_floor(),))
         elif job == "krx_min":
             # (D) 와 (D+1) 의 합집합. NXT 거래종목 집합이 날마다 거의 같아 합집합은 약 1.05배뿐이다.
             cur.execute(
@@ -648,7 +653,7 @@ def fetch_tick(cur, code, day, market):
         for i in range(0, len(recs), 5000):
             cur.executemany(
                 "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
-                "ask1, bid1, ask_qty1, bid_qty1, trd_type) "
+                "ask1, bid1, ask_qty1, bid_qty1, chg_type) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
     return len(recs), nb
 
@@ -794,12 +799,12 @@ def verify_ob(conn, samples=1):
     return all_ok
 
 
-def fetch_tt(cur, code, day, market):
-    """이미 받아둔 틱에 체결유형(F30614)만 채운다. fetch_ob 와 같은 방식·같은 안전장치.
+def fetch_chg_type(cur, code, day, market):
+    """이미 받아둔 틱에 등락구분(F30614)만 채운다. fetch_ob 와 같은 방식·같은 안전장치.
 
-    2필드(키+체결유형)만 받으므로 9필드 전체 재수집의 1/3 수준이다.
+    2필드(키+등락구분)만 받으므로 9필드 전체 재수집의 1/3 수준이다.
     """
-    cur.execute("SELECT COUNT(*), SUM(trd_type IS NOT NULL), SUM(seq IS NOT NULL) "
+    cur.execute("SELECT COUNT(*), SUM(chg_type IS NOT NULL), SUM(seq IS NOT NULL) "
                 "FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
     n_rows, n_tt, n_seq = cur.fetchone()
     if not n_rows:
@@ -808,12 +813,12 @@ def fetch_tt(cur, code, day, market):
         return 0, 0                       # 이미 채워짐 -> 호출 없이 완료 처리
     if n_seq != n_rows:
         raise Unavailable(f"seq 없는 행 {n_rows - int(n_seq or 0):,}/{n_rows:,} "
-                          "— 정렬 검증 불가로 체결유형 보강 건너뜀")
+                          "— 정렬 검증 불가로 등락구분 보강 건너뜀")
 
     url = f"/stock/{FAM_NXT[market]}/tick_date"
     rows, nb = call(url, {"jcode": code, "edate": day.strftime("%Y%m%d"),
-                          "data_list": ",".join(TT_FIELDS)})
-    check_fields(rows, TT_FIELDS, url)
+                          "data_list": ",".join(CHG_TYPE_FIELDS)})
+    check_fields(rows, CHG_TYPE_FIELDS, url)
 
     cur.execute("SELECT n, seq FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
     stored = dict(cur.fetchall())
@@ -834,9 +839,9 @@ def fetch_tt(cur, code, day, market):
                            "행 정렬이 어긋났습니다.")
         ups.append((num(r, "F30614"), day, code, n))
     if unverified:
-        raise Unavailable(f"{unverified:,}행이 seq 로 검증되지 않음 — 체결유형 보강 건너뜀")
+        raise Unavailable(f"{unverified:,}행이 seq 로 검증되지 않음 — 등락구분 보강 건너뜀")
     for i in range(0, len(ups), 5000):
-        cur.executemany("UPDATE nxt_tick SET trd_type=%s WHERE trade_date=%s AND code=%s AND n=%s",
+        cur.executemany("UPDATE nxt_tick SET chg_type=%s WHERE trade_date=%s AND code=%s AND n=%s",
                         ups[i:i + 5000])
     return len(ups), nb
 
@@ -908,7 +913,7 @@ def run(conn, job, budget):
                     elif job == "tick_ob":
                         n, nb = fetch_ob(cur, code, day, market)
                     elif job == "tick_tt":
-                        n, nb = fetch_tt(cur, code, day, market)
+                        n, nb = fetch_chg_type(cur, code, day, market)
                     elif job == "nxt_min":
                         n, nb = fetch_bar(cur, code, day, market, "NXT")
                     else:

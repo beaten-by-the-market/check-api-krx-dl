@@ -79,7 +79,13 @@ CREATE TABLE IF NOT EXISTS nxt_tick (
   -- 69 = 실체결 아님. 명세 원문이 '69:예' 에서 잘려 명칭 미확정(F15317 은 '예상체결',
   -- 단말 1313 대비 컬럼은 '예'=기세). 어느 쪽이든 거래량 제외. 구분하지 않으면 SUM(qty) 가
   -- 0.3~0.9% 과대계상된다(실측). 2026-08-11 이후 수집분부터 채워진다.
-  trd_type   SMALLINT     NULL,
+  chg_type   SMALLINT     NULL,
+  -- 출처. NULL = CHECK API REST 수집분(이 스크립트). 1 = 수집서버 1313 캡처 이관분
+  -- (client_import/import_ticks.py). 이관분은 seq·mktcap 이 없고, 메시지 경계에서
+  -- bid_qty1 이 흔들릴 수 있다(실측 종목당 0.6%, 다른 컬럼은 무결).
+  -- ※ ROW_FORMAT=COMPRESSED 라 ALGORITHM=INSTANT 가 안 먹는다. 컬럼 추가는 INPLACE
+  --   전체 재작성이다(269M행 기준 41분). 스키마 변경은 몰아서 한 번에 할 것.
+  src        TINYINT      NULL,
   PRIMARY KEY (trade_date, code, n),
   KEY ix_code_ts (code, trade_date, ts)
 ) ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8
@@ -144,7 +150,7 @@ PARTITION BY RANGE COLUMNS (trade_date) (
 -- 예상체결 레코드(ts=0, qty=0)는 제외한다.
 CREATE OR REPLACE VIEW nxt_tick_session AS
 SELECT
-  trade_date, code, ts, price, qty, side,
+  trade_date, code, ts, price, qty, side, chg_type,
   CASE
     WHEN ts <  9000000 THEN 'PRE'      -- 08:00~08:50
     WHEN ts < 15300000 THEN 'MAIN'     -- 09:00~15:20
@@ -152,6 +158,6 @@ SELECT
   END AS session
 FROM nxt_tick
 WHERE qty > 0 AND ts BETWEEN 1 AND 23595999
-  -- 69(예상체결)는 실제 체결이 아니므로 제외한다. trd_type 이 NULL 인 과거 수집분은
+  -- 69(예상체결)는 실제 체결이 아니므로 제외한다. chg_type 이 NULL 인 과거 수집분은
   -- 구분할 수 없어 그대로 포함된다(거래량 0.3~0.9% 과대 가능).
-  AND (trd_type IS NULL OR trd_type <> 69);
+  AND (chg_type IS NULL OR chg_type <> 69);

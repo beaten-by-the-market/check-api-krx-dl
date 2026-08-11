@@ -20,3 +20,7 @@ data/
 
 # 체크익스퍼트 소켓 캡처 도구/산출물(로컬 전용, 커밋 금지)
 check-client/
+
+# 별도 리포로 관리(beaten-by-the-market/checkclient-tick-import).
+# 여기 중첩돼 있는 이유: 자격증명을 이 리포 루트의 .env 에서 읽는다.
+client_import/
