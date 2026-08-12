@@ -773,7 +773,13 @@ def verify_ob(conn, samples=1):
             want = (num(r, "F16604"), ts, int(r["F15001"] or 0), qty, num(r, "F15022"),
                     num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"))
             checked += 1
-            if tuple(stored[n]) != want:
+            got = tuple(stored[n])
+            # 1313 캡처 이관분은 seq 가 없다(스키마 주석 참조). seq 만 NULL 인 경우를
+            # '불일치'로 세면 이관 구간 전체가 오탐이 된다(2026-08-13 실측: 928/928 오탐).
+            # 나머지 8필드가 다 맞으면 정렬은 정상이므로 seq 는 비교에서 뺀다.
+            if got[0] is None:
+                got, want = got[1:], want[1:]
+            if got != want:
                 mismatch += 1
                 if first_bad is None:
                     first_bad = (n, tuple(stored[n]), want)
