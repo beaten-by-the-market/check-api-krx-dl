@@ -180,6 +180,38 @@ GROUP BY session;
 - **체결방향**: 체결가가 매도호가 이상이면 매수 주도, 매수호가 이하면 매도 주도입니다.
   `side`(F15022)와 교차 검증할 수 있습니다.
 
+## 거래량 검증 — 무엇을 빼야 진짜 거래량인가
+
+체결장을 그대로 `SUM(qty)` 하면 **공식 거래량보다 큽니다.** `chg_type`(F30614)이 `69`인 행은
+기세(호가만 움직인 것)라 실제 체결이 아니고, 거래소 집계에서 빠지기 때문입니다.
+
+정답지는 넥스트레이드 공식 통계입니다. `nxt_daily` 표에 담아 두었습니다
+(`nxt_daily_load.py`, 출처 `nxt-data-api`). **CHECK API 한도를 쓰지 않습니다.**
+
+```sql
+-- 한 거래일의 (종목별) 대조: 차이가 0이어야 정상
+SELECT t.code, d.qty AS 공식거래량,
+       SUM(CASE WHEN t.chg_type <> 69 THEN t.qty END) AS 틱거래량,
+       SUM(CASE WHEN t.chg_type <> 69 THEN t.qty END) - d.qty AS 차이
+FROM nxt_tick t JOIN nxt_daily d
+  ON d.trade_date = t.trade_date AND d.code = t.code
+WHERE t.trade_date = '2026-06-08' AND t.src IS NULL
+GROUP BY t.code, d.qty
+HAVING SUM(t.chg_type IS NULL) = 0;      -- chg_type 이 완비된 종목만
+```
+
+주의할 점 두 가지입니다.
+
+- **공식 거래량은 두 세션의 합**입니다. `regular_market`(정규시장) + `closing_price`(종가매매).
+  종가매매를 빼먹으면 소액 잔차가 남습니다(실측: 066570 315주, 454910 29주).
+  `nxt_daily.qty`는 이미 둘을 더한 값입니다.
+- **`side`(F15022)로는 69를 못 가려냅니다.** `side=3`은 69를 포함하는 더 넓은 집합이라
+  종목·날짜마다 6~12건이 어긋납니다. 시간대(15:19:59~15:39:59) 규칙도 실패했습니다
+  (400표본 중 48건, 12%만 일치). **`F30614`을 실제로 받는 것 외에 대안이 없습니다.**
+
+`chg_type`이 NULL인 과거 수집분은 어느 행이 69인지 특정할 수 없지만, **수량은 알 수 있습니다**:
+`69 거래량 = 틱 SUM(qty) - nxt_daily.qty`. 총량 분석은 이걸로 보정하면 됩니다.
+
 ## 주의사항
 
 - **틱은 소멸성입니다.** 보관 101일이 지나면 되찾을 수 없습니다. 수집을 며칠 쉬면 그만큼
@@ -194,6 +226,8 @@ GROUP BY session;
 - **등록 IP PC에서만** 실데이터가 들어옵니다.
 
 ## 뒤에서 쓰는 데이터 (참고)
-- 체결: `/stock/{m222·m223}/tick_date` (38필드 중 9개 선택 수신, `jcode`+`edate`)
+- 체결: `/stock/{m222·m223}/tick_date` (38필드 중 10개 선택 수신, `jcode`+`edate`)
 - 유니버스: `/stock/{m222·m223}/rank_invest_date` (그날 실제 거래된 종목 판별)
-- 스크립트: `nxt_krx_ingest.py` · 스키마: `nxt_krx_schema.sql` · 상세: `references/nxt-analysis.md`
+- 검증 기준선: 넥스트레이드 공식 거래현황 (`nxt-data-api`, CHECK API 한도 안 씀)
+- 스크립트: `nxt_krx_ingest.py` · `nxt_daily_load.py` · 스키마: `nxt_krx_schema.sql` ·
+  상세: `references/nxt-analysis.md`

@@ -144,6 +144,30 @@ PARTITION BY RANGE COLUMNS (trade_date) (
   PARTITION pmax    VALUES LESS THAN (MAXVALUE)
 );
 
+-- ------------------------------------------------- NXT 공식 일별 거래량·거래대금
+-- 출처: nxt-data-api (nextrade.co.kr 거래현황). CHECK API 한도를 쓰지 않는다.
+-- nxt_daily_load.py 가 채운다. 체결 데이터 검증의 기준선(정답지) 역할.
+--
+-- 왜 필요한가: 틱에는 chg_type=69(기세, 실체결 아님)가 섞여 SUM(qty)가 과대계상된다.
+-- 이 표와 대조하면 69 제외가 제대로 됐는지 (거래일, 종목) 단위로 확인할 수 있고,
+-- chg_type 을 못 받은 구간에서도 69 수량 = 틱합계 - 공식값 으로 총량을 보정할 수 있다.
+--
+-- 세션이 둘로 나뉜다: 정규시장(regular_market) + 종가매매(closing_price) = 그날 전체.
+-- 종가매매를 빼먹으면 소액 잔차가 남는다(실측 066570 315주, 454910 29주).
+CREATE TABLE IF NOT EXISTS nxt_daily (
+  trade_date DATE    NOT NULL,
+  code       CHAR(6) NOT NULL,
+  market     ENUM('KOSPI','KOSDAQ') NULL,   -- mktId STK/KSQ
+  name       VARCHAR(64) NULL,
+  reg_qty    BIGINT  NULL,                  -- 정규시장 거래량
+  reg_val    BIGINT  NULL,                  -- 정규시장 거래대금
+  cls_qty    BIGINT  NULL,                  -- 종가매매 거래량
+  cls_val    BIGINT  NULL,                  -- 종가매매 거래대금
+  qty        BIGINT  NULL,                  -- reg_qty + cls_qty (대조에 쓰는 값)
+  val        BIGINT  NULL,                  -- reg_val + cls_val
+  PRIMARY KEY (trade_date, code)
+) ENGINE=InnoDB;
+
 -- ------------------------------------------------------------ 분석용 세션 집계 뷰
 -- NXT 세션 구분. 틱 시각(HHMMSSss)을 프리/메인/애프터로 나눈다.
 -- 특수 마커 레코드(F15019 = 31000000 장마감 / 41000000 시간외마감 / 51000000 장전 등)와
