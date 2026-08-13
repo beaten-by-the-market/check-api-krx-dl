@@ -1,7 +1,10 @@
 """chg_type(F30614) 을 API 없이 복원한다. CHECK 한도를 전혀 쓰지 않는다.
 
 왜 필요한가
-  체결장에는 chg_type=69(기세, 실체결 아님)가 섞여 SUM(qty) 가 과대계상된다.
+  체결장에는 chg_type=69(실체결 아님)가 섞여 SUM(qty) 가 과대계상된다.
+  ※ 69 는 '기세'가 아니다(2026-08-13 전수 확인). 기세는 당일 무거래 종목에만 성립하고
+    수량이 0인데, 69 는 실체결도 한 종목에 붙고 수량이 있다(캡처분은 음수까지).
+    자세한 건 nxt_krx_ingest.py 의 F30614 주석 참조.
   tick_date 보관창(100일)을 지난 날짜는 F30614 를 이제 받을 수 없다
   (2026-08-13 기준 2026-04-03~05-04 의 21거래일, 12,756 (일,종목)이 이미 그렇다).
   보관창 안이라도 소급에 쓸 한도가 없다 -- 같은 용량이면 틱 자체를 받는 게 낫다.
@@ -18,11 +21,24 @@
   주의: 1313 화면 캡처 이관분(src=1)은 같은 '체결 아님'을 side=0 으로 표현한다.
   그쪽은 side=3 에 69 가 한 건도 없어서 이 알고리즘의 전제가 성립하지 않는다.
   다만 캡처 이관분은 chg_type 이 이미 채워져 있어 애초에 복원 대상이 아니다.
+  전제가 조용히 어긋나지 않도록, src IS NOT NULL 행이 섞인 날은 명시적으로 거부한다.
+
+  API-69 는 대부분 중복행이다. 메인마켓 마지막 체결을 15:20 마감 뒤에도 반복 재송신한
+  것이라 (ts, price, qty) 가 전부 같다 -- 2026-06-08 전 종목 중복률 95.6%(16,297행 ->
+  고유 713개), 005380 은 858행이 전부 15:19:59·634,000·157 하나다. 그래서 부분합을
+  '행' 단위로 세면 같은 답이 수천 가지로 갈려 죄다 모호로 떨어진다. 값이 같은 행끼리
+  묶어 '어느 묶음에서 몇 개를 고르나'로 세면 진짜 갈리는 경우만 모호로 남는다.
 
 무엇을 하지 않는가
   해가 유일할 때만 확정한다. 여러 개면 아무것도 쓰지 않고 '모름'으로 남긴다.
   틀린 값을 채우는 것이 비는 것보다 훨씬 나쁘다 -- 나중에 구분이 안 된다.
-  검증(2026-08-13, 8거래일 4,066 표본): 유일해 87.31%, 오답 0건.
+  단, 값이 같아 서로 바꿔도 모든 집계가 동일한 행들 사이의 선택은 '갈린다'로 치지 않는다.
+  그런 (일,종목)은 method='subsetdup' 으로 따로 남겨 언제든 되돌릴 수 있게 한다.
+
+  검증(2026-08-13, 정답이 있는 7거래일 4,347 표본): 행 확정 97.65%, 오답 0건.
+    05-04 615 / 05-06 602 / 05-07 608 / 05-08 612 / 05-11 569 / 06-05 619 / 06-08 620
+    묶음 세기 도입 전에는 89.69% 였다(모호 446 -> 100). 늘어난 346 건이 전부 중복행 때문에
+    갈리던 것이고, 그중 42 건은 정답과 다른 행을 골랐지만 (수량,금액)이 같아 집계는 동일하다.
 
   1분봉은 쓰지 않는다. 봉 거래량도 69 를 제외한 값이지만, 애프터 세션 경계(15:40~)에서
   봉과 틱의 분 배정이 어긋난다(2026-06-08 에 103종목 123분). 이걸 참으로 가정했더니
@@ -43,7 +59,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from itertools import combinations
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nxt_krx_ingest as I
@@ -61,21 +76,24 @@ CAP = 2           # 해가 2개 이상인 걸 확인하면 바로 모호 판정 
 # 창의 값어치는 커버리지가 아니라 이런 오배정을 막는 데 있다.
 #
 # 상한 15:40 은 구조적이다 -- 애프터마켓은 15:30~15:40 이 주문접수뿐이고 체결은 15:40 부터다.
-# 그래서 15:30~15:39 에는 기세가 생기고(전체의 12.2%) 15:40 부터는 실제 체결이 된다.
+# 그래서 15:30~15:39 에는 69 가 생기고(전체의 12.2%) 15:40 부터는 실제 체결이 된다.
 # API 로 F30614 을 받은 411,952 행 중 15:40 이후 69 는 0 건이다.
 #
 # 하한 09:00 은 여유를 둔 값이다. 실측 최소는 14:36:15 이고 프리장(08:00~08:50)에는 69 가
 # 한 건도 없지만, 하한은 날마다 크게 흔들려서(14:36~15:30) 좁게 잡을 근거가 없다.
+# (5월 4거래일 69 총 75,831행 중 15:00 이전은 6행뿐이라 창을 14:30 까지 좁힐 여지는 있다.
+#  다만 복원 대상기(4월)에는 정답이 없어 분포가 같다는 보장이 없으므로 넓게 둔다.)
 # 접속매매 중(15:18 이전)에도 69 가 0.86% 있는데, 거래가 거의 없는 종목에서 직전 체결의
-# 시각·가격·수량을 그대로 물려받은 기세다(퍼시스 2026-06-09: 하루 157주, 14:43 체결 후
+# 시각·가격·수량을 그대로 물려받은 것이다(퍼시스 2026-06-09: 하루 157주, 14:43 체결 후
 # 애프터까지 체결 없음 -> 그 사이 호가 변동이 14:43 시각으로 기록).
+# 이 '직전 체결 물려받기'가 API-69 중복행의 정체이고, solve 의 묶음 세기가 겨냥하는 것이다.
 WIN_LO, WIN_HI = 9_000_000, 15_400_000
 
 DDL = """
 CREATE TABLE IF NOT EXISTS restore_log (
   trade_date DATE    NOT NULL,
   code       CHAR(6) NOT NULL,
-  method     VARCHAR(16) NOT NULL,   -- allside3 / subset / qtyonly / ambiguous
+  method     VARCHAR(16) NOT NULL,   -- allside3 / subset / subsetdup / qtyonly / ambiguous
   n_rows     INT     NULL,           -- 69 로 확정한 행 수
   qty69      BIGINT  NULL,           -- 그 (일,종목)의 69 거래량 (항상 정확)
   val69      BIGINT  NULL,
@@ -85,74 +103,106 @@ CREATE TABLE IF NOT EXISTS restore_log (
 """
 
 
+class Unsearchable(Exception):
+    """해를 끝까지 세지 못했다. 유일하다고 말할 수 없으므로 '모름'으로 남긴다."""
+
+
+NODE_BUDGET = 300_000   # 이만큼 뒤져도 안 끝나면 포기한다(모호와 같게 취급)
+
+
 def solve(rows, target_q, target_v, maxk=MAXK, cap=CAP):
-    """합이 (target_q, target_v) 인 부분집합을 최소 크기부터 찾는다. 최대 cap 개까지.
+    """합이 (target_q, target_v) 인 부분집합을 찾는다. 최대 cap 개까지.
 
-    rows: [(n, qty, val), ...]   반환: [frozenset(n), ...]
-    조합을 그대로 돌리면 후보가 858개까지 나와 폭발한다(C(858,4)=2.2e10).
-    쌍합 사전으로 k=3,4 를 각각 O(n)/O(n^2) 조회에 푼다.
+    rows: [(n, qty, val), ...]  -- qty·val 이 모두 양수인 행만 넘길 것
+    반환: [(frozenset(n), swappable), ...]
+          swappable = 고른 행 중에 '값이 같아 서로 바꿔도 되는' 행이 있었다는 표시.
+
+    행을 하나씩 세지 않고 (qty, val) 이 같은 행끼리 묶어 '어느 묶음에서 몇 개'로 센다.
+    API-69 는 95.6%가 중복행이라(005380 2026-06-08: 858행이 전부 같은 값) 행 단위로 세면
+    같은 답이 C(858,k) 가지로 갈려 전부 모호가 된다. 묶음 단위로 세면 그건 해 하나다 --
+    어느 쪽을 고르든 뺄 수량·금액이 같아 모든 집계가 동일하기 때문이다.
+
+    묶음 수는 행 수보다 훨씬 작다(16,297행 -> 713묶음). 수량 내림차순 DFS 에 접미 최대합
+    가지치기를 걸면 전수 탐색이면서도 예전 쌍합 사전보다 빠르다.
     """
-    n = len(rows)
-    sols = [frozenset([r[0]]) for r in rows if r[1] == target_q and r[2] == target_v]
-    if sols or maxk < 2 or n < 2:
-        return sols[:cap]
+    if any(q <= 0 or v <= 0 for _, q, v in rows):
+        raise Unsearchable      # 가지치기가 양수 전제 위에 서 있다. 깨지면 세지 않는다.
 
-    pair = {}
-    for i in range(n):
-        ni, qi, vi = rows[i]
-        for j in range(i + 1, n):
-            nj, qj, vj = rows[j]
-            b = pair.setdefault((qi + qj, vi + vj), [])
-            if len(b) < 8:
-                b.append((ni, nj))
+    # 목표보다 큰 행은 어떤 조합에도 못 들어간다(전부 양수라서). 미리 빼면 묶음 수가 줄어
+    # 재귀 깊이도 같이 줄어든다 -- DFS 가 묶음마다 한 단계씩 내려가기 때문이다.
+    rows = [r for r in rows if r[1] <= target_q and r[2] <= target_v]
 
-    if (target_q, target_v) in pair:
-        return [frozenset(p) for p in pair[(target_q, target_v)][:cap]]
-    if maxk < 3:
-        return []
+    groups = {}
+    for n, q, v in rows:
+        groups.setdefault((q, v), []).append(n)
+    for ns in groups.values():
+        ns.sort()               # SQL 결과 순서는 보장이 없다. 재실행해도 같은 행이 찍히도록.
+    items = sorted(groups.items(), key=lambda kv: -kv[0][0])
+    keys = [k for k, _ in items]
+    mem = [ns for _, ns in items]
+    G = len(keys)
+    if G > 700:
+        raise Unsearchable      # 재귀가 묶음당 한 단계다. 파이썬 기본 한계(1000) 전에 손 뗀다.
+
+    suf = [0] * (G + 1)         # 묶음 i 이후로 만들 수 있는 수량 상한
+    for i in range(G - 1, -1, -1):
+        suf[i] = suf[i + 1] + keys[i][0] * min(len(mem[i]), maxk)
+
+    found, budget = [], [NODE_BUDGET]
+
+    def dfs(i, k_left, tq, tv, counts):
+        if tq == 0 and tv == 0:
+            found.append(tuple(counts))     # 뒤 묶음은 전부 0개 -- 해 하나로 확정
+            return len(found) >= cap
+        if i >= G or k_left == 0 or tq < 0 or tv < 0 or tq > suf[i]:
+            return False
+        budget[0] -= 1
+        if budget[0] <= 0:
+            raise Unsearchable
+        q, v = keys[i]
+        for c in range(min(len(mem[i]), k_left, tq // q), -1, -1):
+            counts.append(c)
+            hit = dfs(i + 1, k_left - c, tq - q * c, tv - v * c, counts)
+            counts.pop()
+            if hit:
+                return True
+        return False
+
+    dfs(0, maxk, target_q, target_v, [])
 
     out = []
-    for ni, qi, vi in rows:
-        for p in pair.get((target_q - qi, target_v - vi), ()):
-            if ni not in p:
-                s = frozenset((ni,) + p)
-                if s not in out:
-                    out.append(s)
-                    if len(out) >= cap:
-                        return out
-    if out or maxk < 4:
-        return out
-
-    for (q1, v1), ps1 in pair.items():
-        for p2 in pair.get((target_q - q1, target_v - v1), ()):
-            for p1 in ps1:
-                if not set(p1) & set(p2):
-                    s = frozenset(p1 + p2)
-                    if s not in out:
-                        out.append(s)
-                        if len(out) >= cap:
-                            return out
-    if out or maxk < 5:
-        return out
-
-    # k=5 이상은 후보가 적을 때만 전수 탐색한다. 시각 창으로 후보가 줄어 대부분 여기 들어온다.
-    # C(24,6)=134,596 이라 부담이 없다. 후보가 많으면 조합 폭발이라 포기하고 '모름'으로 남긴다.
-    if n <= 24:
-        for k in range(5, maxk + 1):
-            for combo in combinations(rows, k):
-                if (sum(x[1] for x in combo) == target_q
-                        and sum(x[2] for x in combo) == target_v):
-                    out.append(frozenset(x[0] for x in combo))
-                    if len(out) >= cap:
-                        return out
-            if out:
-                break
+    for counts in found:
+        picked, swap = set(), False
+        for i, c in enumerate(counts):
+            if c:
+                picked.update(mem[i][:c])   # 값이 같으니 앞에서부터 집는다(결정적)
+                if c < len(mem[i]):
+                    swap = True
+        out.append((frozenset(picked), swap))
     return out
+
+
+class CaptureDay(Exception):
+    """1313 캡처 이관분(src=1)이 섞인 날. 이 알고리즘의 전제가 성립하지 않는다."""
+
+
+def _sig(ns, rows):
+    """행 집합을 '값의 다중집합'으로 환원한다. 중복행 사이의 선택 차이를 무시하려고 쓴다."""
+    qv = {r[0]: (r[1], r[2]) for r in rows}
+    return sorted(qv[n] for n in ns)
 
 
 def restore_day(conn, day, write=True, check=False):
     """하루치를 복원한다. check=True 면 쓰지 않고 정답(chg_type)과 대조만 한다."""
     with conn.cursor() as cur:
+        # (0) 캡처 이관분이 섞인 날은 거부한다. 그쪽 69 는 side=0 이라 아래 후보군(side=3)이
+        #     통째로 헛돈다. 애초에 chg_type 이 100% 차 있어 복원할 것도 없다.
+        #     write 경로는 (3)의 filled 로도 막히지만 --verify 는 안 막혀서 여기서 잡는다.
+        cur.execute("SELECT EXISTS(SELECT 1 FROM nxt_tick "
+                    "WHERE trade_date=%s AND src IS NOT NULL)", (day,))
+        if cur.fetchone()[0]:
+            raise CaptureDay(day)
+
         # (1) 종목별 69 총량. 틱이 완전한 (일,종목)만 대상이 된다.
         cur.execute("""
             SELECT t.code, SUM(t.qty)-d.qty, SUM(t.price*t.qty)-d.val
@@ -164,8 +214,11 @@ def restore_day(conn, day, write=True, check=False):
 
         # (2) 후보군: 시각 창 안의 side=3. 69 는 실측상 전부 이 조건을 만족한다.
         #     창 밖 side=3 은 '69 아님'이 확정이므로 후보에서 빠진다(모호 감소).
+        #     qty>0 조건은 solve 의 가지치기가 양수 전제 위에 서 있어서 필요하다. API 수집분은
+        #     파서가 qty<=0 을 이미 버리므로(fetch_tick) 실제로 걸러지는 행은 없다.
         cur.execute("""SELECT code, n, qty, price*qty, chg_type FROM nxt_tick
-                       WHERE trade_date=%s AND side=3 AND ts >= %s AND ts < %s""",
+                       WHERE trade_date=%s AND side=3 AND qty > 0
+                         AND ts >= %s AND ts < %s""",
                     (day, WIN_LO, WIN_HI))
         cand = {}
         for code, n, q, v, ct in cur.fetchall():
@@ -179,8 +232,8 @@ def restore_day(conn, day, write=True, check=False):
                        GROUP BY code HAVING SUM(chg_type IS NULL)=0""", (day,))
         filled = {code for (code,) in cur.fetchall()}
 
-    stat = {"allside3": 0, "subset": 0, "qtyonly": 0, "ambiguous": 0, "nodata": 0,
-            "ok": 0, "bad": 0}
+    stat = {"allside3": 0, "subset": 0, "subsetdup": 0, "qtyonly": 0, "ambiguous": 0,
+            "nodata": 0, "ok": 0, "okdup": 0, "bad": 0}
     updates, logs = [], []
     for code, (tq, tv) in target.items():
         rows = cand.get(code, [])
@@ -205,16 +258,28 @@ def restore_day(conn, day, write=True, check=False):
             elif tq > sq or tq < 0:                   # 전제 위반 -> 손대지 않는다
                 method, picked = "qtyonly", None
             else:
-                sols = solve([(r[0], r[1], r[2]) for r in rows], sq - tq, sv - tv)
-                if len(sols) == 1:
-                    method = "subset"
-                    picked = frozenset(r[0] for r in rows) - sols[0]
+                try:
+                    sols = solve([(r[0], r[1], r[2]) for r in rows], sq - tq, sv - tv)
+                except Unsearchable:
+                    # 끝까지 못 셌다 = 유일하다고 말할 수 없다. 모호와 같게 취급한다.
+                    method, picked = "ambiguous", None
                 else:
-                    method = "ambiguous" if sols else "qtyonly"
-                    picked = None
+                    if len(sols) == 1:
+                        keep, swap = sols[0]
+                        method = "subsetdup" if swap else "subset"
+                        picked = frozenset(r[0] for r in rows) - keep
+                    else:
+                        method = "ambiguous" if sols else "qtyonly"
+                        picked = None
 
         if check and picked is not None:
-            stat["ok" if picked == truth else "bad"] += 1
+            if picked == truth:
+                stat["ok"] += 1
+            elif _sig(picked, rows) == _sig(truth, rows):
+                # 행은 다르지만 값의 다중집합이 같다 -- 어느 쪽을 골라도 모든 집계가 동일하다.
+                stat["okdup"] += 1
+            else:
+                stat["bad"] += 1
         stat[method] = stat.get(method, 0) + 1
         logs.append((day, code, method, len(picked) if picked is not None else None, tq, tv))
         if picked and write and not check:
@@ -297,11 +362,20 @@ def main():
             return
 
         if args.verify:
-            stat, _ = restore_day(conn, args.verify, write=False, check=True)
-            n = stat["ok"] + stat["bad"]
-            print(f"[verify] {args.verify}  확정 {n:,}  정답 {stat['ok']:,}  오답 {stat['bad']:,}")
+            try:
+                stat, _ = restore_day(conn, args.verify, write=False, check=True)
+            except CaptureDay:
+                print(f"[verify] {args.verify} 는 1313 캡처 이관분(src=1)입니다. 69 가 side=0 에 "
+                      "실려 이 알고리즘의 전제가 성립하지 않고, chg_type 도 이미 채워져 있습니다.")
+                return
+            n = stat["ok"] + stat["okdup"] + stat["bad"]
+            print(f"[verify] {args.verify}  확정 {n:,}  정답 {stat['ok']:,}  "
+                  f"정답(중복행 치환) {stat['okdup']:,}  오답 {stat['bad']:,}")
             print(f"  방법별: 전부69 {stat['allside3']:,}  부분합 {stat['subset']:,}  "
-                  f"모호 {stat['ambiguous']:,}  수량만 {stat['qtyonly']:,}")
+                  f"부분합(중복) {stat['subsetdup']:,}  모호 {stat['ambiguous']:,}  "
+                  f"수량만 {stat['qtyonly']:,}")
+            print("  '중복행 치환'은 고른 행이 정답과 다르지만 (수량,금액)이 같아 모든 집계가 "
+                  "동일한 경우입니다 -- 오답이 아닙니다.")
             if stat["bad"]:
                 print("  오답이 있습니다 -- 복원을 진행하지 마세요.")
             return
@@ -317,20 +391,34 @@ def main():
             else:
                 ap.error("--date / --sdate+--edate / --plan / --verify 중 하나를 주세요")
 
-        tot = {"allside3": 0, "subset": 0, "ambiguous": 0, "qtyonly": 0, "nodata": 0}
-        n_upd = 0
+        tot = {"allside3": 0, "subset": 0, "subsetdup": 0, "ambiguous": 0,
+               "qtyonly": 0, "nodata": 0}
+        n_upd, n_skip = 0, 0
         for day in days:
-            stat, k = restore_day(conn, day)
+            try:
+                stat, k = restore_day(conn, day)
+            except CaptureDay:
+                n_skip += 1
+                print(f"{day}  건너뜀 — 1313 캡처 이관분(src=1). chg_type 이 이미 채워져 있고 "
+                      "69 가 side=0 이라 복원 대상이 아닙니다.", flush=True)
+                continue
             n_upd += k
             for key in tot:
                 tot[key] += stat.get(key, 0)
             print(f"{day}  전부69 {stat.get('allside3',0):>4}  부분합 {stat.get('subset',0):>4}  "
+                  f"부분합(중복) {stat.get('subsetdup',0):>4}  "
                   f"모호 {stat.get('ambiguous',0):>4}  수량만 {stat.get('qtyonly',0):>4}  "
                   f"({k:,}행 표시)", flush=True)
-        done = tot["allside3"] + tot["subset"]
+        done = tot["allside3"] + tot["subset"] + tot["subsetdup"]
         n = sum(tot.values())
-        print(f"\n=== {len(days)}거래일 {n:,}개 (일,종목) ===")
+        print(f"\n=== {len(days) - n_skip}거래일 {n:,}개 (일,종목)"
+              + (f", 캡처분 {n_skip}일 건너뜀" if n_skip else "") + " ===")
+        if not n:
+            print("  대상이 없습니다.")
+            return
         print(f"  행 단위 확정 : {done:,} ({done/n*100:.2f}%)  -> nxt_tick 69행 {n_upd:,}건 표시")
+        print(f"    그중 중복행 치환분(subsetdup): {tot['subsetdup']:,} "
+              "-- 어느 행을 골라도 집계가 같은 경우")
         print(f"  수량만 확정  : {n-done:,} ({(n-done)/n*100:.2f}%)  "
               f"-> restore_log 에 qty69/val69 만 기록(행은 미상)")
     finally:
