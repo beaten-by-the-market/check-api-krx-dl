@@ -135,6 +135,9 @@ def restore_day(conn, day, write=True, check=False):
     updates, logs = [], []
     for code, (tq, tv) in target.items():
         rows = cand.get(code, [])
+        if not check and rows and all(r[3] is not None for r in rows):
+            # API 로 F30614 을 이미 받은 (일,종목)은 손대지 않는다. 추정이 실측을 덮으면 안 된다.
+            continue
         if check and any(r[3] is None for r in rows):
             # 정답이 없는 종목을 대조에 넣으면 truth 가 빈 집합이 되어 전부 오답으로 보인다
             continue

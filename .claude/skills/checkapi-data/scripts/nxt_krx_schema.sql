@@ -168,6 +168,28 @@ CREATE TABLE IF NOT EXISTS nxt_daily (
   PRIMARY KEY (trade_date, code)
 ) ENGINE=InnoDB;
 
+-- ------------------------------------------------- chg_type 복원 이력 (한도 미사용)
+-- nxt_chg_restore.py 산출물. 보관창(100일)을 지나 F30614 을 받을 수 없는 구간의
+-- chg_type 을 nxt_daily 기준선 + 부분합으로 복원한다. 복원분과 API 수신분을 구분하려고
+-- (거래일, 종목) 단위로 방법과 근거를 남긴다.
+--
+-- method: allside3  그 종목 side=3 행 전부가 69   (nxt_tick.chg_type 에 기록됨)
+--         subset    부분합으로 69 행을 특정        (nxt_tick.chg_type 에 기록됨)
+--         ambiguous 해가 여럿 -> 행은 미상
+--         qtyonly   전제 위반/후보 없음 -> 행은 미상
+-- ambiguous·qtyonly 도 qty69/val69 는 정확하다. 틱 합계 - 공식값이라 언제나 성립한다.
+-- 실측 정확도(2026-08-13, 정답 있는 8거래일 4,525표본): 행 확정 88.2%, 오답 0건.
+CREATE TABLE IF NOT EXISTS restore_log (
+  trade_date DATE    NOT NULL,
+  code       CHAR(6) NOT NULL,
+  method     VARCHAR(16) NOT NULL,
+  n_rows     INT     NULL,           -- 69 로 확정한 행 수 (미상이면 NULL)
+  qty69      BIGINT  NULL,           -- 그 (일,종목)의 69 거래량. 항상 정확
+  val69      BIGINT  NULL,
+  done_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (trade_date, code)
+) ENGINE=InnoDB;
+
 -- ------------------------------------------------------------ 분석용 세션 집계 뷰
 -- NXT 세션 구분. 틱 시각(HHMMSSss)을 프리/메인/애프터로 나눈다.
 -- 특수 마커 레코드(F15019 = 31000000 장마감 / 41000000 시간외마감 / 51000000 장전 등)와
@@ -182,6 +204,10 @@ SELECT
   END AS session
 FROM nxt_tick
 WHERE qty > 0 AND ts BETWEEN 1 AND 23595999
-  -- 69(예상체결)는 실제 체결이 아니므로 제외한다. chg_type 이 NULL 인 과거 수집분은
-  -- 구분할 수 없어 그대로 포함된다(거래량 0.3~0.9% 과대 가능).
+  -- 69(기세)는 실제 체결이 아니므로 제외한다.
+  -- chg_type 이 NULL 이면 구분할 수 없어 포함된다. 다만 대부분은 nxt_chg_restore.py 가
+  -- 복원해 두었으므로(행 확정 88.2%), 남은 NULL 은 '69 가 아니라고 판정된 행'이거나
+  -- restore_log.method 가 ambiguous/qtyonly 인 종목의 행이다. 후자만 과대계상이 남는다.
+  -- 그 종목의 정확한 69 수량은 restore_log.qty69 에 있으니 총량 분석은 그걸로 보정하면 된다.
+  -- 어느 (일,종목)이 완결됐는지는 restore_log.method IN ('allside3','subset') 로 판별한다.
   AND (chg_type IS NULL OR chg_type <> 69);
