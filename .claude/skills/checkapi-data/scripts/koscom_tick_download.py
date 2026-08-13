@@ -104,7 +104,17 @@ def targets(conn, include_expired=False):
     return out
 
 
-def fetch(env, day, code, market, fields, send_fields=True, timeout=600):
+TRUNC_TRIES = 3     # 전송이 끊기면 이만큼 다시 시도한다
+
+
+def fetch(env, day, code, market, fields, send_fields=True, timeout=900):
+    """(body, content_type, fam). 전송이 끊기면 다시 시도한다.
+
+    수십 MB 를 한 연결로 받다 보니 IncompleteRead 가 실제로 난다
+    (2026-08-14 05-07/005930: 7.3MB 받고 22.5MB 남긴 채 끊김).
+    끊겨도 서버는 이미 만들어 보냈으므로 한도는 그대로 나간다 -- 그냥 넘기면 그 바이트가
+    통째로 손해다. 그래서 포기하지 않고 다시 받는다.
+    """
     fam = I.FAM_NXT[market]
     q = {"cust_id": env["CHECK_CUST_ID"], "auth_key": env["CHECK_AUTH_KEY"],
          "jcode": code, "edate": day.strftime("%Y%m%d"),
@@ -112,9 +122,23 @@ def fetch(env, day, code, market, fields, send_fields=True, timeout=600):
     if send_fields:
         q["data_list"] = ",".join(fields)
     url = f"{BASE}{ROUTE}?{urllib.parse.urlencode(q)}"
-    req = urllib.request.Request(url, headers={"Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(), r.headers.get("Content-Type", ""), fam
+
+    last = None
+    for attempt in range(1, TRUNC_TRIES + 1):
+        req = urllib.request.Request(url, headers={"Accept": "*/*"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                want = r.headers.get("Content-Length")
+                body = r.read()
+                if want and len(body) < int(want):
+                    raise IOError(f"잘림 {len(body):,}/{int(want):,}")
+                return body, r.headers.get("Content-Type", ""), fam
+        except (IOError, OSError) as exc:
+            last = exc
+            if attempt < TRUNC_TRIES:
+                print(f"    끊김({exc}) — 재시도 {attempt}/{TRUNC_TRIES - 1}")
+                time.sleep(5 * attempt)
+    raise IOError(f"{TRUNC_TRIES}회 모두 끊김: {last}")
 
 
 def classify(body):

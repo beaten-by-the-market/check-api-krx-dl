@@ -30,7 +30,11 @@ import nxt_krx_ingest as I
 
 I.C._force_utf8_stdout()
 
-TICK_FIELDS = I.TICK_FIELDS          # 9필드. 파일엔 38개가 다 있지만 우리는 이것만 저장한다.
+# 파일엔 36~38필드가 다 있지만 우리는 이것만 저장한다.
+# ※ TICK_FIELDS 가 늘면 아래 recs.append 와 INSERT 도 같이 늘려야 한다. 안 그러면 조용히
+#   빠진다 -- F30614(등락구분)가 실제로 그랬다(2026-08-14 발견). 검증은 필드 '존재'만 보고
+#   저장 여부는 안 보기 때문에 오류 없이 NULL 로 들어간다.
+TICK_FIELDS = I.TICK_FIELDS
 
 
 def open_rows(path):
@@ -97,7 +101,8 @@ def main():
             continue
         recs.append((day, code, n, num(r, "F16604"), ts, int(r["F15001"] or 0), qty,
                      num(r, "F15022"),
-                     num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541")))
+                     num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"),
+                     num(r, "F30614")))
 
     print(f"  읽음 {total:,}행 → 저장대상 {len(recs):,}행 (제외 {skipped:,}: 예상체결·마커·수량0)")
     if recs:
@@ -117,8 +122,8 @@ def main():
             for i in range(0, len(recs), 5000):
                 cur.executemany(
                     "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
-                    "ask1, bid1, ask_qty1, bid_qty1) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
+                    "ask1, bid1, ask_qty1, bid_qty1, chg_type) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
             # API 로 못 받아 retry/expired 로 남아 있던 기록을 ok 로 정정한다.
             I.log_done(cur, "nxt_tick", code, day, "ok", len(recs), 0,
                        "KOSCOM 별도 전달 덤프로 적재")
