@@ -11,8 +11,13 @@
   일치한다(2026-08-13 전수 검증 4,497/4,497). 그래서 어느 행인지 몰라도 총량은 안다:
       69 수량 = 틱 SUM(qty)       - nxt_daily.qty
       69 금액 = 틱 SUM(price*qty) - nxt_daily.val
-  69 는 실측상 100% side=3 이고, side=3 중 69 아닌 행은 2.6% 뿐이다(종목당 평균 0.7행).
-  그래서 '69 가 아닌 쪽'을 찾는 작은 부분합 문제가 된다. 수량·금액 두 제약이 동시에 걸린다.
+  69 는 CHECK API 수집분에서 예외 없이 side=3 이다(411,952행 전수). 반대로 side=3 중
+  69 가 아닌 행은 2.40%(종목·하루당 평균 0.60행)뿐이다. 그래서 '69 가 아닌 쪽'을 찾는
+  작은 부분합 문제가 되고, 수량·금액 두 제약이 동시에 걸린다.
+
+  주의: 1313 화면 캡처 이관분(src=1)은 같은 '체결 아님'을 side=0 으로 표현한다.
+  그쪽은 side=3 에 69 가 한 건도 없어서 이 알고리즘의 전제가 성립하지 않는다.
+  다만 캡처 이관분은 chg_type 이 이미 채워져 있어 애초에 복원 대상이 아니다.
 
 무엇을 하지 않는가
   해가 유일할 때만 확정한다. 여러 개면 아무것도 쓰지 않고 '모름'으로 남긴다.
@@ -38,14 +43,33 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from itertools import combinations
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nxt_krx_ingest as I
 
 I.C._force_utf8_stdout()
 
-MAXK = 4          # 이 크기까지 부분집합을 찾는다. 종목당 실제 평균은 0.7행.
+MAXK = 6          # 이 크기까지 부분집합을 찾는다. 종목당 실제 평균은 0.7행.
 CAP = 2           # 해가 2개 이상인 걸 확인하면 바로 모호 판정 -- 전부 셀 필요가 없다
+
+# 69 가 나올 수 있는 시각 창. 이 밖의 side=3 행은 '69 아님'이 확정이라 후보에서 뺀다.
+#
+# 창이 없으면 확정률은 비슷한데(87% -> 90%) '조용한 오답'이 생긴다. 창 없이 돌린 첫 판에서
+# 15:40 이후 행 10건이 69 로 찍혔다(006110 15:40:52 등). 일별 합계는 맞으니 검산에 안 걸리고,
+# 유일해라서 모호로도 안 빠진다. 후보가 넓으면 진짜 69 가 아닌 조합이 유일해처럼 보인다.
+# 창의 값어치는 커버리지가 아니라 이런 오배정을 막는 데 있다.
+#
+# 상한 15:40 은 구조적이다 -- 애프터마켓은 15:30~15:40 이 주문접수뿐이고 체결은 15:40 부터다.
+# 그래서 15:30~15:39 에는 기세가 생기고(전체의 12.2%) 15:40 부터는 실제 체결이 된다.
+# API 로 F30614 을 받은 411,952 행 중 15:40 이후 69 는 0 건이다.
+#
+# 하한 09:00 은 여유를 둔 값이다. 실측 최소는 14:36:15 이고 프리장(08:00~08:50)에는 69 가
+# 한 건도 없지만, 하한은 날마다 크게 흔들려서(14:36~15:30) 좁게 잡을 근거가 없다.
+# 접속매매 중(15:18 이전)에도 69 가 0.86% 있는데, 거래가 거의 없는 종목에서 직전 체결의
+# 시각·가격·수량을 그대로 물려받은 기세다(퍼시스 2026-06-09: 하루 157주, 14:43 체결 후
+# 애프터까지 체결 없음 -> 그 사이 호가 변동이 14:43 시각으로 기록).
+WIN_LO, WIN_HI = 9_000_000, 15_400_000
 
 DDL = """
 CREATE TABLE IF NOT EXISTS restore_log (
@@ -108,6 +132,21 @@ def solve(rows, target_q, target_v, maxk=MAXK, cap=CAP):
                         out.append(s)
                         if len(out) >= cap:
                             return out
+    if out or maxk < 5:
+        return out
+
+    # k=5 이상은 후보가 적을 때만 전수 탐색한다. 시각 창으로 후보가 줄어 대부분 여기 들어온다.
+    # C(24,6)=134,596 이라 부담이 없다. 후보가 많으면 조합 폭발이라 포기하고 '모름'으로 남긴다.
+    if n <= 24:
+        for k in range(5, maxk + 1):
+            for combo in combinations(rows, k):
+                if (sum(x[1] for x in combo) == target_q
+                        and sum(x[2] for x in combo) == target_v):
+                    out.append(frozenset(x[0] for x in combo))
+                    if len(out) >= cap:
+                        return out
+            if out:
+                break
     return out
 
 
@@ -123,20 +162,31 @@ def restore_day(conn, day, write=True, check=False):
             GROUP BY t.code, d.qty, d.val""", (day,))
         target = {code: (int(q), int(v)) for code, q, v in cur.fetchall()}
 
-        # (2) 후보군: side=3. 69 는 실측상 전부 여기 들어있다.
+        # (2) 후보군: 시각 창 안의 side=3. 69 는 실측상 전부 이 조건을 만족한다.
+        #     창 밖 side=3 은 '69 아님'이 확정이므로 후보에서 빠진다(모호 감소).
         cur.execute("""SELECT code, n, qty, price*qty, chg_type FROM nxt_tick
-                       WHERE trade_date=%s AND side=3""", (day,))
+                       WHERE trade_date=%s AND side=3 AND ts >= %s AND ts < %s""",
+                    (day, WIN_LO, WIN_HI))
         cand = {}
         for code, n, q, v, ct in cur.fetchall():
             cand.setdefault(code, []).append((n, int(q), int(v), ct))
+
+        # (3) 이미 chg_type 이 채워진 (일,종목). 후보군(side=3)만 봐서는 판별할 수 없다.
+        #     1313 캡처 이관분(src=1)은 같은 '체결 아님'을 side=0 으로 표현해서, side=3 에는
+        #     69 가 한 건도 없다. 그래서 2026-08-10 366종목이 이미 값이 있는데도 '행 미상'으로
+        #     기록됐다. 행 전체를 기준으로 판단해야 한다.
+        cur.execute("""SELECT code FROM nxt_tick WHERE trade_date=%s
+                       GROUP BY code HAVING SUM(chg_type IS NULL)=0""", (day,))
+        filled = {code for (code,) in cur.fetchall()}
 
     stat = {"allside3": 0, "subset": 0, "qtyonly": 0, "ambiguous": 0, "nodata": 0,
             "ok": 0, "bad": 0}
     updates, logs = [], []
     for code, (tq, tv) in target.items():
         rows = cand.get(code, [])
-        if not check and rows and all(r[3] is not None for r in rows):
-            # API 로 F30614 을 이미 받은 (일,종목)은 손대지 않는다. 추정이 실측을 덮으면 안 된다.
+        if not check and code in filled:
+            # F30614 을 이미 확보한 (일,종목)은 손대지 않는다. 추정이 실측을 덮으면 안 되고,
+            # restore_log 에 '행 미상'으로 남겨도 안 된다(사실과 다르다).
             continue
         if check and any(r[3] is None for r in rows):
             # 정답이 없는 종목을 대조에 넣으면 truth 가 빈 집합이 되어 전부 오답으로 보인다
@@ -193,6 +243,9 @@ def main():
     ap.add_argument("--verify", metavar="YYYY-MM-DD",
                     help="정답이 있는 날로 대조만 한다(DB 를 바꾸지 않음)")
     ap.add_argument("--plan", action="store_true")
+    ap.add_argument("--reset", action="store_true",
+                    help="이전 복원분을 되돌린다(알고리즘을 고쳐 다시 돌릴 때). "
+                         "API 로 F30614 을 받은 (일,종목)은 건드리지 않는다.")
     args = ap.parse_args()
 
     conn = I.connect()
@@ -200,6 +253,30 @@ def main():
         with conn.cursor() as cur:
             cur.execute(DDL)
         conn.commit()
+
+        if args.reset:
+            # 복원은 69 표시를 '추가'만 한다. 알고리즘을 바꿔 다시 돌리려면 먼저 지워야
+            # 이전 판정이 남아 섞이지 않는다.
+            # ingest_log 에 tick_tt='ok' 가 있는 (일,종목)은 API 실측이므로 제외한다.
+            # (2026-05-04 은 가드를 넣기 전에 복원이 돌았던 날이라 이 제외가 실제로 필요하다.)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE nxt_tick t
+                      JOIN restore_log r ON r.trade_date=t.trade_date AND r.code=t.code
+                       LEFT JOIN ingest_log g ON g.job='tick_tt' AND g.status='ok'
+                            AND g.trade_date=t.trade_date AND g.code=t.code
+                       SET t.chg_type=NULL
+                     WHERE t.chg_type=69 AND g.code IS NULL""")
+                n = cur.rowcount
+                cur.execute("""DELETE r FROM restore_log r
+                               LEFT JOIN ingest_log g ON g.job='tick_tt' AND g.status='ok'
+                                    AND g.trade_date=r.trade_date AND g.code=r.code
+                               WHERE g.code IS NULL""")
+                m = cur.rowcount
+            conn.commit()
+            print(f"복원분 되돌림: nxt_tick {n:,}행 chg_type=NULL, restore_log {m:,}건 삭제")
+            print("API 실측(tick_tt='ok')분은 건드리지 않았습니다.")
+            return
 
         if args.plan:
             with conn.cursor() as cur:
