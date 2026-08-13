@@ -233,13 +233,19 @@ def restore_day(conn, day, write=True, check=False):
         filled = {code for (code,) in cur.fetchall()}
 
     stat = {"allside3": 0, "subset": 0, "subsetdup": 0, "qtyonly": 0, "ambiguous": 0,
-            "nodata": 0, "ok": 0, "okdup": 0, "bad": 0}
-    updates, logs = [], []
+            "nodata": 0, "ok": 0, "okdup": 0, "bad": 0, "superseded": 0}
+    updates, logs, obsolete = [], [], []
     for code, (tq, tv) in target.items():
         rows = cand.get(code, [])
         if not check and code in filled:
             # F30614 을 이미 확보한 (일,종목)은 손대지 않는다. 추정이 실측을 덮으면 안 되고,
             # restore_log 에 '행 미상'으로 남겨도 안 된다(사실과 다르다).
+            #
+            # 남아 있던 기록은 지운다. 복원이 '모호'로 남긴 뒤 나중에 tick_tt 로 실측이
+            # 들어오는 순서가 실제로 생기는데(2026-08-14 에 290건), 그대로 두면 restore_log
+            # 가 '복원기가 못 풀었다'고 계속 주장한다. 사실은 API 로 받은 값이다.
+            # --reset 은 tick_tt='ok' 행을 일부러 보존하므로 거기서는 정리되지 않는다.
+            obsolete.append((day, code))
             continue
         if check and any(r[3] is None for r in rows):
             # 정답이 없는 종목을 대조에 넣으면 truth 가 빈 집합이 되어 전부 오답으로 보인다
@@ -291,6 +297,10 @@ def restore_day(conn, day, write=True, check=False):
                 chunk = updates[i:i + 5000]
                 cur.executemany("UPDATE nxt_tick SET chg_type=69 "
                                 "WHERE trade_date=%s AND code=%s AND n=%s", chunk)
+            if obsolete:
+                cur.executemany("DELETE FROM restore_log WHERE trade_date=%s AND code=%s",
+                                obsolete)
+                stat["superseded"] = cur.rowcount
             cur.executemany(
                 "INSERT INTO restore_log (trade_date, code, method, n_rows, qty69, val69) "
                 "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE method=VALUES(method), "
@@ -393,6 +403,7 @@ def main():
 
         tot = {"allside3": 0, "subset": 0, "subsetdup": 0, "ambiguous": 0,
                "qtyonly": 0, "nodata": 0}
+        n_sup = 0
         n_upd, n_skip = 0, 0
         for day in days:
             try:
@@ -403,6 +414,7 @@ def main():
                       "69 가 side=0 이라 복원 대상이 아닙니다.", flush=True)
                 continue
             n_upd += k
+            n_sup += stat.get("superseded", 0)
             for key in tot:
                 tot[key] += stat.get(key, 0)
             print(f"{day}  전부69 {stat.get('allside3',0):>4}  부분합 {stat.get('subset',0):>4}  "
@@ -421,6 +433,9 @@ def main():
               "-- 어느 행을 골라도 집계가 같은 경우")
         print(f"  수량만 확정  : {n-done:,} ({(n-done)/n*100:.2f}%)  "
               f"-> restore_log 에 qty69/val69 만 기록(행은 미상)")
+        if n_sup:
+            print(f"  실측으로 대체 : {n_sup:,}  -> tick_tt 로 F30614 을 받은 (일,종목). "
+                  "복원 기록을 지웠다(복원 결과가 아니다)")
     finally:
         conn.close()
 

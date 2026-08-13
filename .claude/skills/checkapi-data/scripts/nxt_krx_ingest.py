@@ -125,6 +125,19 @@ CHG_TYPE_FIELDS = ["F16604", "F30614"]
 # 플래그만 주면 중단 지점부터 이어서 진행한다.
 TICK_TT_ENABLED = False
 
+# tick_tt 를 돌릴 때는 '복원기가 못 푼 (일,종목)'만 겨냥한다. 2026-08-14 결정.
+#
+# 전면 소급은 보관창 안 전체를 훑어 11,409콜(3.73GB)이다. 그런데 nxt_chg_restore.py 가
+# 한도 없이 96.98%(22,794/23,505)를 확정하고 남기는 건 711건뿐이고, 그중 보관창 안은
+# 332건 = 약 104MB 다. 같은 결과를 1/36 값에 산다.
+# 나머지 379건은 보관창(100일) 밖이라 켜든 끄든 못 받는다 -- 복원기가 남긴 qty69/val69
+# (항상 정확)로만 존재하고, 행 단위 판별은 영구 미상이다.
+#
+# 대상 판정은 restore_log.method IN ('ambiguous','qtyonly') 이다. 복원을 안 돌린 날짜는
+# restore_log 에 행이 없어 대상에서 빠진다 -- 그런 날은 먼저 nxt_chg_restore.py 를 돌려라.
+# 전면 소급이 필요하면 --tt-all.
+TICK_TT_UNRESOLVED_ONLY = True
+
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
@@ -643,9 +656,14 @@ def targets(conn, job):
             # tick_ob 때와 달리 최신부터 갈 이유가 없다 -- 전진 수집이 2026-08-11 부터
             # F30614 를 직접 받으므로 최신 구간은 저절로 채워진다. 반면 앞쪽(5월 초)은
             # 보관 하한이 매일 올라와 며칠 안에 영구 소실되므로 그쪽이 급하다.
+            # 기본은 복원기가 못 푼 (일,종목)만 (TICK_TT_UNRESOLVED_ONLY 주석 참조).
+            narrow = ("JOIN restore_log r ON r.trade_date=l.trade_date AND r.code=l.code "
+                      "                  AND r.method IN ('ambiguous','qtyonly') "
+                      if TICK_TT_UNRESOLVED_ONLY else "")
             cur.execute(
                 "SELECT l.code, l.trade_date, u.market FROM ingest_log l "
                 "JOIN nxt_universe u ON u.code=l.code AND u.trade_date=l.trade_date "
+                + narrow +
                 "LEFT JOIN ingest_log b ON b.job='tick_tt' AND b.code=l.code "
                 "                      AND b.trade_date=l.trade_date "
                 "WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s "
@@ -1123,7 +1141,7 @@ class _Tee:
 
 
 def main():
-    global DAILY_LIMIT, TICK_TT_ENABLED
+    global DAILY_LIMIT, TICK_TT_ENABLED, TICK_TT_UNRESOLVED_ONLY
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
@@ -1137,6 +1155,9 @@ def main():
     ap.add_argument("--with-tick-tt", action="store_true",
                     help="F30614 소급 보강(tick_tt)을 다시 켠다. 기본은 꺼져 있고 "
                          "nxt_chg_restore.py 로 한도 없이 복원한다(TICK_TT_ENABLED 주석 참조)")
+    ap.add_argument("--tt-all", action="store_true",
+                    help="tick_tt 대상을 보관창 안 전체로 넓힌다(11,409콜/3.73GB). 기본은 "
+                         "복원기가 못 푼 (일,종목)만 = 332콜/104MB")
     ap.add_argument("--refresh-universe", action="store_true",
                     help="신규 거래일만 유니버스에 추가(수집은 안 함)")
     ap.add_argument("--backfill-to", metavar="YYYYMMDD",
@@ -1160,6 +1181,8 @@ def main():
     DAILY_LIMIT = args.daily_limit
     if args.with_tick_tt:
         TICK_TT_ENABLED = True
+    if args.tt_all:
+        TICK_TT_UNRESOLVED_ONLY = False
     # --job tick_tt 는 명시적 지시이므로 스위치와 무관하게 그대로 돌린다.
 
     conn = connect()
