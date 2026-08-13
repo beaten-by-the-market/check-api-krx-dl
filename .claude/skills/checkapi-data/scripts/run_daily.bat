@@ -16,5 +16,12 @@ REM
 REM Run now:    schtasks /run    /tn "NXT-KRX daily ingest"
 REM Unregister: schtasks /delete /tn "NXT-KRX daily ingest" /f
 REM Log:        data\logs\ingest_YYYYMMDD.log
+REM
+REM Line 1 refreshes the NXT official daily volume baseline (nxt_daily). It hits
+REM nextrade.co.kr, NOT the CHECK API, so it costs none of the 1GB quota. It runs first
+REM so the baseline is in place even if the ingest below stops on quota. --recent picks
+REM the dates itself, keeping this file free of cmd date arithmetic.
+
+"C:\Users\Peter\AppData\Local\Programs\Python\Python313\python.exe" "c:\Users\Peter\github\check-api-krx-dl\.claude\skills\checkapi-data\scripts\nxt_daily_load.py" --recent 5
 
 "C:\Users\Peter\AppData\Local\Programs\Python\Python313\python.exe" "c:\Users\Peter\github\check-api-krx-dl\.claude\skills\checkapi-data\scripts\nxt_krx_ingest.py" --daily --budget 1000000000 --log "c:\Users\Peter\github\check-api-krx-dl\data\logs"

@@ -110,6 +110,8 @@ def main():
     ap.add_argument("--date", metavar="YYYYMMDD")
     ap.add_argument("--sdate", metavar="YYYYMMDD")
     ap.add_argument("--edate", metavar="YYYYMMDD")
+    ap.add_argument("--recent", type=int, metavar="N",
+                    help="최근 N 거래일. run_daily.bat 이 날짜 계산 없이 부르려고 있다")
     ap.add_argument("--verify", metavar="YYYYMMDD")
     args = ap.parse_args()
 
@@ -122,6 +124,11 @@ def main():
         days = []
         if args.date:
             days = [args.date]
+        elif args.recent:
+            with conn.cursor() as cur:
+                cur.execute("SELECT trade_date FROM trading_day WHERE trade_date <= CURDATE() "
+                            "ORDER BY trade_date DESC LIMIT %s", (args.recent,))
+                days = sorted(d.strftime("%Y%m%d") for (d,) in cur.fetchall())
         elif args.sdate and args.edate:
             with conn.cursor() as cur:                        # 거래일 달력에서만 뽑는다
                 cur.execute("SELECT trade_date FROM trading_day WHERE trade_date BETWEEN %s AND %s "
@@ -130,7 +137,9 @@ def main():
                              f"{args.edate[:4]}-{args.edate[4:6]}-{args.edate[6:]}"))
                 days = [d.strftime("%Y%m%d") for (d,) in cur.fetchall()]
         else:
-            ap.error("--date 또는 --sdate/--edate 를 주세요")
+            ap.error("--date / --recent / --sdate+--edate 중 하나를 주세요")
+        if not days:
+            print("대상 거래일이 없습니다."); return
 
         print(f"적재 대상 {len(days)}거래일: {days[0]} ~ {days[-1]}")
         tot = 0

@@ -87,6 +87,24 @@ OB_FIELDS = ["F16604", "F14501", "F14531", "F14511", "F14541"]
 # 2/3/5 는 직전 대비 방향이라 세션과 무관하게 온종일 분포하고 종목마다 비중이 크게 다르다.
 CHG_TYPE_FIELDS = ["F16604", "F30614"]
 
+# tick_tt(F30614 소급 보강)를 기본으로 끈다. 2026-08-13 결정.
+#
+# 일 1GB 는 거의 정확히 반으로 갈린다: 거래일 1일치 전종목 틱이 698MB 이고 거래일은
+# 0.71일/일 속도로 생기므로 '따라가는 데만' 496MB/일이 든다. 소급에 쓸 수 있는 건 504MB/일뿐.
+# 그 여유를 놓고 두 작업이 경쟁한다.
+#   tick_tt  : 3.73GB (11,409콜)  -- 이미 가진 틱에 필드 하나를 채운다
+#   nxt_tick : 29.8GB (27,069콜)  -- 틱 자체가 없다. 매일 만료된다
+# 같은 3.73GB 로 tick_tt 는 필드 하나를, nxt_tick 은 영영 사라질 틱 8.5거래일치 전부를 산다.
+#
+# F30614 는 한도를 안 쓰고 복원할 수 있다는 게 확인됐다(nxt_daily 기준선 + 부분합):
+#   - 69 수량·금액은 항상 정확 (틱 SUM - 공식값, 4,497/4,497 원 단위 일치)
+#   - 69 행 특정은 87.31%, 오답 0건 (나머지는 틀린 답이 아니라 '모름'으로 남는다)
+# 자세한 건 nxt_chg_restore.py 참조.
+#
+# 되살리려면 --with-tick-tt. 남은 대상 목록과 targets() 로직은 그대로 두었으므로
+# 플래그만 주면 중단 지점부터 이어서 진행한다.
+TICK_TT_ENABLED = False
+
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
@@ -96,8 +114,15 @@ FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 # 100 이면 실측 경계(101) 안쪽이라 헛시도가 없고, 하루 이틀 손해는 어차피 못 받는 날이다.
 TICK_RETENTION_DAYS = 100
 
-# 콜당 평균 응답 바이트(표본 실측) -- --plan 추정에만 쓴다.
-AVG_BYTES = {"nxt_tick": 150_000, "krx_min": 50_300, "nxt_min": 53_300, "tick_ob": 900_000, "tick_tt": 350_000}
+# 콜당 평균 응답 바이트 -- --plan 추정에만 쓴다.
+# 2026-08-13 갱신: ingest_log 의 status='ok' 전수 평균으로 다시 쟀다. nxt_tick 이 150,000 으로
+# 잡혀 있었는데 실측은 1,152,187 로 7.7배였다. 잔여 일감을 30GB 가 아니라 4GB 로 보게 만드는
+# 오차라, 한도 배분 판단이 통째로 틀어진다.
+AVG_BYTES = {"nxt_tick": 1_152_187,   # 표본 18,204
+             "tick_ob":    997_353,   # 표본  7,683
+             "tick_tt":    313_612,   # 표본  3,872
+             "nxt_min":     64_958,   # 표본 59,944
+             "krx_min":     50_300}   # 미실측(수집 전) 추정치
 
 # 평시 일 한도. KOSCOM 이 일시적으로 늘려 주기도 한다(2026-08-05~09: 5GB).
 # --daily-limit 로 덮어쓸 수 있다. 안내 문구용이며 실제 상한은 --budget 이다.
@@ -491,6 +516,10 @@ def daily(conn, budget):
     # 둘 다 보관창 안 데이터를 다루므로 고정 순서를 두면 한쪽이 만료될 때까지 굶는다.
     # 각 작업의 가장 오래된 대상 날짜를 비교해 매 실행마다 스스로 정한다.
     tick_jobs = (["tick_ob", "tick_tt", "nxt_tick"] if ob_ok else ["tick_tt", "nxt_tick"])
+    if not TICK_TT_ENABLED:
+        tick_jobs.remove("tick_tt")
+        print("[daily] tick_tt(F30614 소급)는 꺼져 있습니다 — 한도를 nxt_tick 에 씁니다.\n"
+              "        F30614 는 nxt_chg_restore.py 로 한도 없이 복원합니다. 켜려면 --with-tick-tt.")
     oldest = {}
     for j in tick_jobs:
         t = targets(conn, j)
@@ -510,7 +539,9 @@ def daily(conn, budget):
         # (2026-08-07 실측: 틱이 1,106MB 에서 멈추자 1분봉이 나머지 3,894MB 를 가져갔다).
         # -> 틱 대상이 남아 있는 한 1분봉은 시작하지 않는다.
         if job in ("krx_min", "nxt_min"):
-            tick_left = sum(len(targets(conn, j)) for j in ("tick_ob", "tick_tt", "nxt_tick"))
+            # 꺼 둔 작업의 잔여를 세면 1분봉이 영원히 시작되지 않는다.
+            blockers = ["tick_ob", "nxt_tick"] + (["tick_tt"] if TICK_TT_ENABLED else [])
+            tick_left = sum(len(targets(conn, j)) for j in blockers)
             if tick_left:
                 print(f"\n[보류] {job} 은 건너뜁니다 — 소멸성인 틱 작업이 {tick_left:,}콜 남아 "
                       f"있어 1분봉(소급 제한 없음)보다 우선합니다.")
@@ -1039,9 +1070,13 @@ def plan(conn):
         avg = avg or AVG_BYTES[job]
         gb = n * avg / 1e9
         total += gb
+        off = "  [꺼짐]" if job == "tick_tt" and not TICK_TT_ENABLED else ""
         print(f"  {job:9} 남은 {n:>8,}콜 x {avg/1000:>6.0f}KB({src:>12}) = {gb:>5.1f}GB "
-              f"({gb:>4.1f}일치 한도)")
+              f"({gb:>4.1f}일치 한도){off}")
     print(f"  {'합계':9} {'':>44} {total:>5.1f}GB  ({total:.0f}일)")
+    if not TICK_TT_ENABLED:
+        print("  * tick_tt 는 --daily 에서 제외됩니다(위 합계에는 포함). "
+              "F30614 는 nxt_chg_restore.py 로 한도 없이 복원합니다.")
     print("\n권장 순서: tick_ob(호가보강·만료임박) -> nxt_tick(소멸성) -> krx_min -> nxt_min")
     print("  tick_ob 는 이미 받아둔 틱에 호가 4개만 UPDATE 한다(전체 재수집 대비 약 44% 절약).")
     print("  대상은 보관창 안으로 한정돼 스스로 소진되고, 최신 날짜부터 처리해 전진 구간과 이어붙는다.")
@@ -1068,7 +1103,7 @@ class _Tee:
 
 
 def main():
-    global DAILY_LIMIT
+    global DAILY_LIMIT, TICK_TT_ENABLED
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
@@ -1079,6 +1114,9 @@ def main():
                     help="일 한도(안내 표시용). KOSCOM 한시 상향 기간에 맞춘다.")
     ap.add_argument("--daily", action="store_true",
                     help="일일 러너: 유니버스 증분 갱신 + 우선순위대로 예산 소진까지 수집")
+    ap.add_argument("--with-tick-tt", action="store_true",
+                    help="F30614 소급 보강(tick_tt)을 다시 켠다. 기본은 꺼져 있고 "
+                         "nxt_chg_restore.py 로 한도 없이 복원한다(TICK_TT_ENABLED 주석 참조)")
     ap.add_argument("--refresh-universe", action="store_true",
                     help="신규 거래일만 유니버스에 추가(수집은 안 함)")
     ap.add_argument("--backfill-to", metavar="YYYYMMDD",
@@ -1100,6 +1138,9 @@ def main():
         print(f"\n===== {dt.datetime.now():%Y-%m-%d %H:%M:%S} 시작 =====")
 
     DAILY_LIMIT = args.daily_limit
+    if args.with_tick_tt:
+        TICK_TT_ENABLED = True
+    # --job tick_tt 는 명시적 지시이므로 스위치와 무관하게 그대로 돌린다.
 
     conn = connect()
     # 수집·백필처럼 nxt_tick 을 쓰는 작업만 잠근다. --plan 같은 읽기 전용은 언제든 되게 둔다.
