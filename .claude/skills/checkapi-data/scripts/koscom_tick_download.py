@@ -10,6 +10,12 @@
 라우트
   CHECK API 웹 테스트 폼에서만 드러나는 경로다. 문서·카탈로그 어디에도 없다.
       GET /etc/download/tick?cust_id=..&auth_key=..&jcode=..&edate=..&api_url=<REST 경로>
+
+  ※ 틱 전용 예외다. 다른 데이터의 다운로드 경로를 찾지 마라 (2026-08-15 확정).
+    /etc 도메인은 명세에 26개가 있는데(comp·cons·economic·gaap·ifrs 등) download 는 없다.
+    api_url 을 intra_date 등으로 바꿔 1분봉도 되지 않을까 하는 발상이 나오는데,
+    명세에 없는 것은 없는 것이고 이 라우트만이 예외라는 것이 결론이다.
+    따라서 나머지 백로그(krx_min 11.8GB · nxt_min 9.7GB · tick_ob 0.7GB)는 REST 로 간다.
   api_url 은 URL 인코딩된 REST 경로다(/stock/m222/tick_date -> %2Fstock%2Fm222%2Ftick_date).
   응답은 zip 이고 안에는 JSONL(한 줄에 체결 하나, 36필드 전부)이 종목코드 이름으로 들어 있다.
   data_list 는 무시된다(2026-08-14 실측: 2필드를 보내도 36필드가 온다). 대신 압축이 세서
