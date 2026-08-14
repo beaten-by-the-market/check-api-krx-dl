@@ -107,6 +107,42 @@ def targets(conn, include_expired=False):
 TRUNC_TRIES = 3     # 전송이 끊기면 이만큼 다시 시도한다
 
 
+def backlog_targets(conn, n):
+    """아직 못 받은 (일,종목) 중 거래량 구간별로 고르게 n 건 뽑는다.
+
+    왜 거래량인가: 백로그는 아직 안 받아서 틱 수를 모른다. nxt_daily.qty 는 전 구간에
+    있고 틱 수와 강하게 붙어 있어 크기의 대리로 쓸 수 있다.
+
+    왜 구간별인가: 지금까지 이 라우트로 받은 건 전부 초대형주(005930·000660 등)라
+    평균 18.8MB 다. 백로그의 평균 종목은 훨씬 작고(REST 평균 1.15MB), 그 구간에서는
+    zip 오버헤드가 이득을 까먹을 수 있다. 한쪽 끝만 재면 전체를 잘못 판단한다.
+    """
+    floor = dt.date.today() - dt.timedelta(days=I.TICK_RETENTION_DAYS)
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT u.trade_date, u.code, u.market, d.qty
+            FROM nxt_universe u
+            JOIN nxt_daily d ON d.trade_date=u.trade_date AND d.code=u.code
+            LEFT JOIN ingest_log l ON l.job='nxt_tick' AND l.code=u.code
+                                  AND l.trade_date=u.trade_date
+            WHERE u.trade_date >= %s AND d.qty > 0
+              AND (l.status IS NULL OR l.status='retry')
+            ORDER BY u.trade_date ASC""", (floor,))
+        rows = list(cur.fetchall())      # pymysql 은 튜플을 준다
+    if not rows:
+        return []
+    rows.sort(key=lambda r: int(r[3]))
+    step = max(1, len(rows) // n)
+    picked = [rows[min(i * step, len(rows) - 1)] for i in range(n)]
+    seen, out = set(), []
+    for day, code, market, qty in picked:
+        if (day, code) in seen:
+            continue
+        seen.add((day, code))
+        out.append((day, code, market, "tick", FULL_FIELDS, int(qty)))
+    return out
+
+
 def fetch(env, day, code, market, fields, send_fields=True, timeout=900):
     """(body, content_type, fam). 전송이 끊기면 다시 시도한다.
 
@@ -169,6 +205,9 @@ def main():
                     help="data_list 를 보내지 않는다(전 필드. 라우트가 무시하는지 대조용)")
     ap.add_argument("--include-expired", action="store_true",
                     help="보관창 밖 날짜도 대상에 넣는다(라우트가 창을 우회하는지 시험)")
+    ap.add_argument("--backlog", type=int, metavar="N",
+                    help="toolarge 대신 일반 백로그(아직 못 받은 틱)에서 거래량 구간별로 "
+                         "N 건을 받는다. REST 대비 바이트를 재는 용도이자 실제 수집이다")
     ap.add_argument("--only", metavar="YYYY-MM-DD:CODE",
                     help="이 (일,종목) 하나만 받는다. toolarge 목록 밖도 지정할 수 있다 "
                          "-- 복원기가 못 푼 보관창 밖 건을 시험할 때 쓴다")
@@ -183,7 +222,11 @@ def main():
 
     conn = I.connect()
     try:
-        if args.only:
+        if args.backlog:
+            bl = backlog_targets(conn, args.backlog)
+            tg = [t[:5] for t in bl]
+            vol = {(t[0], t[1]): t[5] for t in bl}
+        elif args.only:
             d, code = args.only.split(":")
             day = dt.date(int(d[:4]), int(d[5:7]), int(d[8:10]))
             with conn.cursor() as cur:
@@ -191,19 +234,33 @@ def main():
                             (day, code))
                 row = cur.fetchone()
             tg = [(day, code, row[0] if row else "KOSPI", "tt", TT_FIELDS)]
+            vol = {}
         else:
             tg = targets(conn, include_expired=args.include_expired or args.probe)
+            vol = {}
     finally:
         conn.close()
 
     floor = dt.date.today() - dt.timedelta(days=I.TICK_RETENTION_DAYS)
     print(f"보관 하한 {floor} (오늘 기준). 대상 {len(tg)}건"
           + ("  [만료분 포함]" if args.include_expired or args.probe else ""))
-    print(f"{'거래일':11} {'종목':8} {'시장':7} {'필요':5} {'필드':>4} {'만료':11}")
+    def saved(day, code, market):
+        """이미 받아둔 파일. 실패 응답(수십 바이트)은 받은 것으로 치지 않는다."""
+        p = os.path.join(args.outdir, f"{I.FAM_NXT[market]}_{day:%Y%m%d}_{code}.zip")
+        return p if os.path.exists(p) and os.path.getsize(p) > 1000 else None
+
+    print(f"{'거래일':11} {'종목':8} {'시장':7} {'필요':5} {'필드':>4} {'만료':11} {'상태':>10}")
+    left = 0
     for day, code, market, need, fields in tg:
         exp = day + dt.timedelta(days=I.TICK_RETENTION_DAYS)
+        have = saved(day, code, market)
+        if not have:
+            left += 1
+        state = f"{os.path.getsize(have)/1e6:.1f}MB" if have else "미수신"
         tag = "  <- 창 밖" if day < floor else ""
-        print(f"{str(day):11} {code:8} {market:7} {need:5} {len(fields):>4} {str(exp):11}{tag}")
+        print(f"{str(day):11} {code:8} {market:7} {need:5} {len(fields):>4} "
+              f"{str(exp):11} {state:>10}{tag}")
+    print(f"\n대상 {len(tg)}건 중 미수신 {left}건")
     if args.plan:
         return
 
@@ -257,7 +314,9 @@ def main():
         with open(path, "wb") as f:
             f.write(body)
         ok += 1
-        print(f"{day} {code}  받음 {len(body):,} bytes -> {os.path.basename(path)}")
+        v = vol.get((day, code))
+        extra = f"  거래량 {v:,}  bytes/주 {len(body)/max(1,v):.2f}" if v else ""
+        print(f"{day} {code}  받음 {len(body):,} bytes -> {os.path.basename(path)}{extra}")
         time.sleep(args.sleep)
 
     print(f"\n받음 {ok}건 / 누적 {spent:,} bytes / 저장 {args.outdir}")
