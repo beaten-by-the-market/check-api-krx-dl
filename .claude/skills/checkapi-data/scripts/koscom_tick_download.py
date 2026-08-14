@@ -11,11 +11,16 @@
   CHECK API 웹 테스트 폼에서만 드러나는 경로다. 문서·카탈로그 어디에도 없다.
       GET /etc/download/tick?cust_id=..&auth_key=..&jcode=..&edate=..&api_url=<REST 경로>
 
-  ※ 틱 전용 예외다. 다른 데이터의 다운로드 경로를 찾지 마라 (2026-08-15 확정).
-    /etc 도메인은 명세에 26개가 있는데(comp·cons·economic·gaap·ifrs 등) download 는 없다.
-    api_url 을 intra_date 등으로 바꿔 1분봉도 되지 않을까 하는 발상이 나오는데,
-    명세에 없는 것은 없는 것이고 이 라우트만이 예외라는 것이 결론이다.
-    따라서 나머지 백로그(krx_min 11.8GB · nxt_min 9.7GB · tick_ob 0.7GB)는 REST 로 간다.
+  ※ 명세로는 이 라우트를 판정할 수 없다. /etc 도메인에 26개(comp·cons·economic·gaap·
+    ifrs 등)가 있지만 download 는 하나도 없다 -- 즉 명세는 이 경로의 존재도, api_url 에
+    무엇이 들어가는지도 말해주지 않는다. 웹 테스트 폼에서 관측해 알아낸 것이 전부다.
+
+    그래서 api_url 에 intra_date 를 넣어 1분봉을 받는 발상은 근거가 없다. 명세에 없는
+    조합을 추측으로 때리는 것일 뿐이다(2026-08-15 판단).
+
+    다만 '분봉 다운로드가 없다'는 뜻은 아니다. 1분봉 조회 화면에 별도 다운로드 버튼이
+    있다면 그 경로는 이것과 다른 URL 일 것이고, 알아내는 방법은 명세가 아니라
+    그 화면을 직접 여는 것이다. 확인 전까지는 REST 로 간다고 전제한다.
   api_url 은 URL 인코딩된 REST 경로다(/stock/m222/tick_date -> %2Fstock%2Fm222%2Ftick_date).
   응답은 zip 이고 안에는 JSONL(한 줄에 체결 하나, 36필드 전부)이 종목코드 이름으로 들어 있다.
   data_list 는 무시된다(2026-08-14 실측: 2필드를 보내도 36필드가 온다). 대신 압축이 세서
