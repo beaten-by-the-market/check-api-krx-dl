@@ -199,6 +199,32 @@ CREATE TABLE IF NOT EXISTS nxt_daily (
   PRIMARY KEY (trade_date, code)
 ) ENGINE=InnoDB;
 
+-- ----------------------------------------------- 애프터 개장 단일가의 예상체결 시계열
+-- 15:30~15:40 은 주문접수뿐이고 체결은 15:40 부터다. 그 10분 동안 거래소가 '지금 체결시키면
+-- 얼마에 몇 주가 체결될지'를 계속 공표하는데, 그게 예상체결가·예상체결수량이다.
+--
+-- 왜 nxt_tick 에 컬럼을 안 붙였나
+--   예상체결이 붙는 행은 chg_type=69 뿐이고 전체의 0.28%(818,559 / 295,911,441)다. 나머지
+--   99.7%가 NULL 인 컬럼 셋을 296M행에 다는 셈이다. 게다가 ROW_FORMAT=COMPRESSED 라
+--   컬럼 추가가 INPLACE 전체 재작성(41분+)이다. 옆 표로 두면 둘 다 피한다.
+--
+-- 어디서 오나 -- API 응답에 이미 들어 있는데 TICK_FIELDS 에 없어 버려지던 칸들이다.
+--   F30531  체결/예상체결시간   진짜 시각. nxt_tick.ts(F15019)는 69 행에서 직전 체결 시각이다
+--   F15176  예상체결가          실측상 예외 없이 그 시점 ask1 또는 bid1 중 하나다
+--   F15308  예상체결량          증분이라 음수가 나온다. 누적합 = 15:40:00 개장 단일가 체결량
+--                               (zip 덤프 12/12 원 단위 일치)
+--
+-- n 은 nxt_tick 과 같은 체계다(응답 배열의 0-based 인덱스). 조인해서 그 시점 호가를 붙일 수 있다.
+CREATE TABLE IF NOT EXISTS nxt_expected (
+  trade_date DATE         NOT NULL,
+  code       CHAR(6)      NOT NULL,
+  n          INT UNSIGNED NOT NULL,   -- nxt_tick.n 과 동일
+  exp_ts     INT UNSIGNED NULL,       -- F30531 HHMMSSss
+  exp_price  INT          NULL,       -- F15176
+  exp_qty    INT          NULL,       -- F15308. 증분, 음수 가능
+  PRIMARY KEY (trade_date, code, n)
+) ENGINE=InnoDB;
+
 -- ------------------------------------------------- chg_type 복원 이력 (한도 미사용)
 -- nxt_chg_restore.py 산출물. 보관창(100일)을 지나 F30614 을 받을 수 없는 구간의
 -- chg_type 을 nxt_daily 기준선 + 부분합으로 복원한다. 복원분과 API 수신분을 구분하려고
