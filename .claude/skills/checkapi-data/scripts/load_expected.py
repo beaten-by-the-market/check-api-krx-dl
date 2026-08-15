@@ -10,7 +10,11 @@
 
 검산
   같은 (일,종목)에서 exp_qty 를 다 더하면 15:40:00 개장 단일가 체결량과 원 단위로 맞는다.
-  --verify 가 그걸 대조한다.
+  단 예상체결 갱신이 실제로 나온 종목에서만 성립한다. 거래가 적으면 갱신이 아예 없거나
+  (69행 0) 수량이 전부 0으로만 오고, 그래도 15:40 에 체결은 일어난다 -- 이건 결손이 아니라
+  얇은 종목의 성질이다. 그래서 69행이 없거나 exp_qty 합이 0이면 '해당없음'으로 센다.
+  실측(2026-08-16): 대형주 44건 44/44 일치. 소형주 12건 중 5건이 해당없음이었고
+  69행 수가 대형주 297~3,711 vs 소형주 0~35 로 자릿수가 다르다.
 
 사용
   python load_expected.py "C:/Users/Peter/Downloads/koscom_tick"      # 폴더 전체
@@ -92,18 +96,21 @@ def main():
             cur.execute(DDL)
         conn.commit()
 
-    print(f"{'파일':30} {'69행':>7} {'exp_qty 합':>11} {'개장체결':>10} {'검산':>5}")
-    tot_rows = ok = bad = 0
+    print(f"{'파일':30} {'69행':>7} {'exp_qty 합':>11} {'개장체결':>10} {'검산':>7}")
+    tot_rows = ok = bad = na = 0
     try:
         for p in files:
             day, code, recs, open_qty = read_zip(p)
             s = sum(r[5] for r in recs if r[5] is not None)
-            hit = (open_qty is not None and s == open_qty)
-            ok += hit
-            bad += (not hit)
+            if not recs or s == 0:
+                mark, na = "해당없음", na + 1      # 갱신이 안 나온 얇은 종목
+            elif open_qty is not None and s == open_qty:
+                mark, ok = "O", ok + 1
+            else:
+                mark, bad = "X", bad + 1
             print(f"{os.path.basename(p)[:30]:30} {len(recs):>7,} {s:>11,} "
                   f"{('-' if open_qty is None else format(open_qty, ',')):>10} "
-                  f"{'O' if hit else 'X':>5}")
+                  f"{mark:>7}")
             if args.verify or not recs:
                 continue
             with conn.cursor() as cur:
@@ -118,10 +125,10 @@ def main():
     finally:
         conn.close()
 
-    print(f"\n검산 일치 {ok}/{ok+bad}"
+    print(f"\n검산 일치 {ok}/{ok+bad}" + (f"  ·  해당없음 {na}" if na else "")
           + ("" if args.verify else f"  ·  적재 {tot_rows:,}행"))
     if bad:
-        print("  불일치가 있습니다 -- exp_qty 누적합이 개장 체결량과 달라진 (일,종목)입니다.")
+        print("  불일치가 있습니다 -- 예상체결 갱신이 나왔는데 누적합이 개장 체결량과 다릅니다.")
 
 
 if __name__ == "__main__":

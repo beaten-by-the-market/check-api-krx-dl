@@ -224,6 +224,9 @@ def main():
                     help="data_list 를 보내지 않는다(전 필드. 라우트가 무시하는지 대조용)")
     ap.add_argument("--include-expired", action="store_true",
                     help="보관창 밖 날짜도 대상에 넣는다(라우트가 창을 우회하는지 시험)")
+    ap.add_argument("--restored", action="store_true",
+                    help="복원기가 추정으로 채운 (일,종목) 중 보관창 안을 전부 받는다. "
+                         "정답으로 덮어쓰면 그 구간은 추정 의존이 사라진다. 만료 임박 순")
     ap.add_argument("--backlog", type=int, metavar="N",
                     help="toolarge 대신 일반 백로그(아직 못 받은 틱)에서 거래량 구간별로 "
                          "N 건을 받는다. REST 대비 바이트를 재는 용도이자 실제 수집이다")
@@ -241,7 +244,32 @@ def main():
 
     conn = I.connect()
     try:
-        if args.backlog:
+        if args.restored:
+            # 틱은 있는데 chg_type '정답'이 없는 (일,종목) = 복원 추정에 의존하는 구간.
+            # restore_log 를 안 본다 -- --reset 직후처럼 비어 있어도 대상이 잡혀야 하고,
+            # 애초에 '정답이 없다'가 본질이지 '복원을 돌렸다'가 본질이 아니다.
+            # 정답 경로 셋: tick_tt 수신 / zip 덤프 적재 / 2026-08-11 이후 수집(F30614 동봉).
+            # 만료 임박 순(오래된 날부터)이라야 사라지기 전에 건진다.
+            floor = dt.date.today() - dt.timedelta(days=I.TICK_RETENTION_DAYS)
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT l.trade_date, l.code, COALESCE(u.market,'KOSPI'), d.qty
+                    FROM ingest_log l
+                    LEFT JOIN nxt_universe u
+                           ON u.trade_date=l.trade_date AND u.code=l.code
+                    LEFT JOIN nxt_daily d
+                           ON d.trade_date=l.trade_date AND d.code=l.code
+                    LEFT JOIN ingest_log t ON t.job='tick_tt' AND t.status='ok'
+                           AND t.trade_date=l.trade_date AND t.code=l.code
+                    WHERE l.job='nxt_tick' AND l.status='ok' AND l.trade_date >= %s
+                      AND t.code IS NULL
+                      AND (l.msg IS NULL OR l.msg NOT LIKE '%%덤프%%')
+                      AND l.done_at < '2026-08-11'
+                    ORDER BY l.trade_date ASC, l.code ASC""", (floor,))
+                rows = list(cur.fetchall())
+            tg = [(d, c_, mk, "tt", TT_FIELDS) for d, c_, mk, _ in rows]
+            vol = {(d, c_): int(q or 0) for d, c_, _, q in rows}
+        elif args.backlog:
             bl = backlog_targets(conn, args.backlog)
             tg = [t[:5] for t in bl]
             vol = {(t[0], t[1]): t[5] for t in bl}
