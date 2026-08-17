@@ -18,6 +18,7 @@ tick_date 가 실패한 건이 여기 해당한다(실측: 005930 / 2026-05-07).
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -55,36 +56,31 @@ def open_rows(path):
 
 
 def parse_name(path):
-    m = re.search(r"(m\d+)_(\d{8})_(\d{6})", os.path.basename(path))
+    # 종목코드에 영문이 섞인다(0008Z0 에스엔시스 등). \d{6} 으로 잡으면 그런 파일이
+    # 조용히 '종목/날짜를 알 수 없음'으로 떨어진다. 2026-08-17 에 실제로 그랬다.
+    m = re.search(r"(m\d+)_(\d{8})_([0-9A-Z]{6})", os.path.basename(path))
     if not m:
         return None, None, None
     return m.group(1), m.group(2), m.group(3)
 
 
-def main():
-    ap = argparse.ArgumentParser(description="KOSCOM 전달 체결 덤프 -> nxt_tick 적재")
-    ap.add_argument("path")
-    ap.add_argument("--code", help="종목코드 6자리(파일명에서 못 읽을 때)")
-    ap.add_argument("--date", help="거래일 YYYYMMDD(파일명에서 못 읽을 때)")
-    ap.add_argument("--dry-run", action="store_true", help="적재하지 않고 검증만")
-    args = ap.parse_args()
+def num(r, k):
+    v = r.get(k)
+    return int(v) if v not in (None, "") else None
 
-    fam, d8, code = parse_name(args.path)
-    code = args.code or code
-    d8 = args.date or d8
-    if not (code and d8):
-        raise SystemExit("종목/날짜를 알 수 없습니다. --code --date 로 지정하세요.")
-    day = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
-    print(f"파일 {os.path.basename(args.path)}")
-    print(f"  대상: {day} {code}" + (f"  (패밀리 {fam})" if fam else ""))
 
-    def num(r, k):
-        v = r.get(k)
-        return int(v) if v not in (None, "") else None
+def load_one(conn, path, day, code, fam, dry_run=False, quiet=False):
+    """파일 하나를 적재한다. conn 을 재사용한다 -- 파일마다 접속하면 그게 병목이다."""
+    def say(*a):
+        if not quiet:
+            print(*a)
 
-    recs, total, skipped, missing_field = [], 0, 0, set()
+    say(f"파일 {os.path.basename(path)}")
+    say(f"  대상: {day} {code}" + (f"  (패밀리 {fam})" if fam else ""))
+
+    recs, total, skipped = [], 0, 0
     t0 = time.time()
-    for n, line in enumerate(open_rows(args.path)):
+    for n, line in enumerate(open_rows(path)):
         total += 1
         r = json.loads(line)
         if n == 0:
@@ -104,36 +100,80 @@ def main():
                      num(r, "F14501"), num(r, "F14531"), num(r, "F14511"), num(r, "F14541"),
                      num(r, "F30614")))
 
-    print(f"  읽음 {total:,}행 → 저장대상 {len(recs):,}행 (제외 {skipped:,}: 예상체결·마커·수량0)")
+    say(f"  읽음 {total:,}행 → 저장대상 {len(recs):,}행 (제외 {skipped:,}: 예상체결·마커·수량0)")
     if recs:
         seqs = [x[3] for x in recs]
-        print(f"  시각 {recs[0][4]} ~ {recs[-1][4]} · seq {seqs[0]:,} ~ {seqs[-1]:,} "
-              f"· 단조증가 {all(seqs[i] <= seqs[i+1] for i in range(len(seqs)-1))}")
-    if args.dry_run:
-        print("  [dry-run] 적재하지 않고 종료")
-        return
+        say(f"  시각 {recs[0][4]} ~ {recs[-1][4]} · seq {seqs[0]:,} ~ {seqs[-1]:,} "
+            f"· 단조증가 {all(seqs[i] <= seqs[i+1] for i in range(len(seqs)-1))}")
+    if dry_run:
+        say("  [dry-run] 적재하지 않고 종료")
+        return len(recs)
 
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
+        for i in range(0, len(recs), 5000):
+            cur.executemany(
+                "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
+                "ask1, bid1, ask_qty1, bid_qty1, chg_type) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
+        # API 로 못 받아 retry/expired 로 남아 있던 기록을 ok 로 정정한다.
+        I.log_done(cur, "nxt_tick", code, day, "ok", len(recs), 0,
+                   "KOSCOM 별도 전달 덤프로 적재")
+    conn.commit()
+    say(f"  적재 완료: {len(recs):,}행 ({time.time()-t0:.1f}초)")
+    return len(recs)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="KOSCOM 전달 체결 덤프 -> nxt_tick 적재")
+    ap.add_argument("paths", nargs="+", help="zip 파일, 폴더, 또는 목록 텍스트파일")
+    ap.add_argument("--code", help="종목코드 6자리(파일명에서 못 읽을 때)")
+    ap.add_argument("--date", help="거래일 YYYYMMDD(파일명에서 못 읽을 때)")
+    ap.add_argument("--dry-run", action="store_true", help="적재하지 않고 검증만")
+    args = ap.parse_args()
+
+    files = []
+    for p in args.paths:
+        if os.path.isdir(p):
+            files.extend(sorted(glob.glob(os.path.join(p, "*.zip"))))
+        elif p.lower().endswith(".txt"):
+            with open(p, encoding="utf-8") as f:
+                files.extend(x.strip() for x in f if x.strip())
+        else:
+            files.append(p)
+    if not files:
+        raise SystemExit("대상 파일이 없습니다.")
+
+    # 접속을 한 번만 연다. 파일마다 프로세스를 띄우면 파일당 3~4초가 드는데
+    # 실제 DB 작업은 0~2초다 -- 나머지가 인터프리터 기동과 접속 비용이었다.
     conn = I.connect()
+    ok = fail = rows = 0
+    t0 = time.time()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
-            before = cur.fetchone()[0]
-            cur.execute("DELETE FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
-            for i in range(0, len(recs), 5000):
-                cur.executemany(
-                    "INSERT INTO nxt_tick (trade_date, code, n, seq, ts, price, qty, side, "
-                    "ask1, bid1, ask_qty1, bid_qty1, chg_type) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", recs[i:i + 5000])
-            # API 로 못 받아 retry/expired 로 남아 있던 기록을 ok 로 정정한다.
-            I.log_done(cur, "nxt_tick", code, day, "ok", len(recs), 0,
-                       "KOSCOM 별도 전달 덤프로 적재")
-        conn.commit()
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM nxt_tick WHERE trade_date=%s AND code=%s", (day, code))
-            after = cur.fetchone()[0]
-        print(f"  적재 완료: {before:,}행 -> {after:,}행 ({time.time()-t0:.0f}초)")
+        for i, path in enumerate(files, 1):
+            fam, d8, code = parse_name(path)
+            code = args.code or code
+            d8 = args.date or d8
+            if not (code and d8):
+                print(f"[{i}] {os.path.basename(path)} — 종목/날짜를 못 읽음. 건너뜀")
+                fail += 1
+                continue
+            day = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
+            try:
+                rows += load_one(conn, path, day, code, fam, args.dry_run,
+                                 quiet=len(files) > 1)
+                ok += 1
+            except Exception as exc:
+                print(f"[{i}] {os.path.basename(path)} 실패: {exc}")
+                fail += 1
+                conn.rollback()
+            if len(files) > 1 and i % 200 == 0:
+                el = time.time() - t0
+                print(f"  {i:,}/{len(files):,}  {rows:,}행  {el:.0f}초  "
+                      f"({el/i:.2f}초/파일)", flush=True)
     finally:
         conn.close()
+    print(f"\n적재 {ok:,}건 · {rows:,}행 · 실패 {fail:,} · {time.time()-t0:.0f}초")
 
 
 if __name__ == "__main__":
