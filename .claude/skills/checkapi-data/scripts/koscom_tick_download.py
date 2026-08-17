@@ -224,6 +224,9 @@ def main():
                     help="data_list 를 보내지 않는다(전 필드. 라우트가 무시하는지 대조용)")
     ap.add_argument("--include-expired", action="store_true",
                     help="보관창 밖 날짜도 대상에 넣는다(라우트가 창을 우회하는지 시험)")
+    ap.add_argument("--missing", action="store_true",
+                    help="틱 자체가 없는 (일,종목)을 받는다. nxt_krx_ingest --daily 의 nxt_tick "
+                         "과 같은 대상·같은 순서(오래된 날부터)인데 REST 대신 zip 이라 0.24배다")
     ap.add_argument("--restored", action="store_true",
                     help="복원기가 추정으로 채운 (일,종목) 중 보관창 안을 전부 받는다. "
                          "정답으로 덮어쓰면 그 구간은 추정 의존이 사라진다. 만료 임박 순")
@@ -244,7 +247,17 @@ def main():
 
     conn = I.connect()
     try:
-        if args.restored:
+        if args.missing:
+            # 틱이 아예 없는 것. 대상 선정은 nxt_krx_ingest 의 nxt_tick 로직을 그대로 쓴다
+            # (오래된 날부터 = 먼저 만료되는 것부터). 검증된 쿼리를 두 벌로 만들지 않는다.
+            rows = I.targets(conn, "nxt_tick")
+            tg = [(day, code, market, "tick", FULL_FIELDS) for code, day, market in rows]
+            with conn.cursor() as cur:
+                cur.execute("""SELECT trade_date, code, qty FROM nxt_daily
+                               WHERE trade_date >= %s""",
+                            (dt.date.today() - dt.timedelta(days=I.TICK_RETENTION_DAYS),))
+                vol = {(d, c_): int(q or 0) for d, c_, q in cur.fetchall()}
+        elif args.restored:
             # 틱은 있는데 chg_type '정답'이 없는 (일,종목) = 복원 추정에 의존하는 구간.
             # restore_log 를 안 본다 -- --reset 직후처럼 비어 있어도 대상이 잡혀야 하고,
             # 애초에 '정답이 없다'가 본질이지 '복원을 돌렸다'가 본질이 아니다.
