@@ -250,7 +250,24 @@ def main():
         if args.missing:
             # 틱이 아예 없는 것. 대상 선정은 nxt_krx_ingest 의 nxt_tick 로직을 그대로 쓴다
             # (오래된 날부터 = 먼저 만료되는 것부터). 검증된 쿼리를 두 벌로 만들지 않는다.
+            #
+            # 단 1313 캡처 이관분이 들어오는 구간은 뺀다. 그쪽은 수집서버가 채우므로
+            # 여기서 받으면 한도만 쓰고 덮어쓰기다. 경계를 날짜로 박아두면 캡처가 계속
+            # 쌓일 때마다 고쳐야 하니, 캡처가 실제로 존재하는 최소 날짜를 DB 에서 읽는다.
+            # src 에는 인덱스가 없다. 범위를 안 주면 296M행 전수 스캔이 된다(실측 10분+).
+            # 월 파티션이라 보관창 하한부터로 한정하면 프루닝이 먹는다 -- 캡처는 어차피
+            # 최근 구간에만 있으므로 보관창 밖을 볼 이유가 없다.
+            floor = dt.date.today() - dt.timedelta(days=I.TICK_RETENTION_DAYS)
+            with conn.cursor() as cur:
+                cur.execute("SELECT MIN(trade_date) FROM nxt_tick "
+                            "WHERE src=1 AND trade_date >= %s", (floor,))
+                cap_from = cur.fetchone()[0]
             rows = I.targets(conn, "nxt_tick")
+            if cap_from:
+                before = len(rows)
+                rows = [r for r in rows if r[1] < cap_from]
+                if before != len(rows):
+                    print(f"[missing] 캡처 담당 구간({cap_from} 이후) {before-len(rows):,}건 제외")
             tg = [(day, code, market, "tick", FULL_FIELDS) for code, day, market in rows]
             with conn.cursor() as cur:
                 cur.execute("""SELECT trade_date, code, qty FROM nxt_daily
