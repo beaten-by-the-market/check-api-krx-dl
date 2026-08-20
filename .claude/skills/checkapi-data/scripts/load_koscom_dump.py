@@ -130,6 +130,9 @@ def main():
     ap.add_argument("--code", help="종목코드 6자리(파일명에서 못 읽을 때)")
     ap.add_argument("--date", help="거래일 YYYYMMDD(파일명에서 못 읽을 때)")
     ap.add_argument("--dry-run", action="store_true", help="적재하지 않고 검증만")
+    ap.add_argument("--move-done", action="store_true",
+                    help="적재에 성공한 파일을 <폴더>/done/ 으로 옮긴다. 폴더를 통째로 넘겨도 "
+                         "다음 실행이 새 파일만 보게 되어, 배치가 쌓일수록 커지는 재적재를 없앤다")
     args = ap.parse_args()
 
     files = []
@@ -163,6 +166,10 @@ def main():
                 rows += load_one(conn, path, day, code, fam, args.dry_run,
                                  quiet=len(files) > 1)
                 ok += 1
+                if args.move_done and not args.dry_run:
+                    dst = os.path.join(os.path.dirname(path), "done")
+                    os.makedirs(dst, exist_ok=True)
+                    os.replace(path, os.path.join(dst, os.path.basename(path)))
             except Exception as exc:
                 print(f"[{i}] {os.path.basename(path)} 실패: {exc}")
                 fail += 1
