@@ -157,6 +157,16 @@ TICK_TT_ENABLED = False
 # 전면 소급이 필요하면 --tt-all.
 TICK_TT_UNRESOLVED_ONLY = True
 
+# 1분봉(krx_min·nxt_min)을 --daily 에서 기본으로 뺀다. 2026-08-27 결정.
+#
+# 틱 백로그를 다 따라잡고 나면 --daily 가 남은 예산을 자동으로 1분봉에 쓴다. 그런데 1분봉은
+# 수집 대상이 아니기로 했고(21.5GB · krx_min 11.8 + nxt_min 9.7), 스케줄러를 껐다가 나중에
+# 무심코 --daily 를 돌리면 그만큼이 조용히 나간다. 대상 목록·targets() 로직은 그대로 두었으니
+# --with-bars 만 주면 원래대로 돈다.
+#
+# 틱만 따라가는 비용은 하루 약 110MB 다(거래일 0.71일/일 x 155MB). 나머지는 안 쓴다.
+BARS_ENABLED = False
+
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
@@ -582,7 +592,11 @@ def daily(conn, budget):
         print(f"[daily] 만료 임박 순서: "
               + " -> ".join(f"{j}(가장 오래된 대상 {oldest[j]})" for j in tick_jobs))
 
-    for job in tick_jobs + ["krx_min", "nxt_min"]:
+    bar_jobs = ["krx_min", "nxt_min"] if BARS_ENABLED else []
+    if not BARS_ENABLED:
+        print("[daily] 1분봉(krx_min·nxt_min)은 꺼져 있습니다 — 수집 대상이 아닙니다. "
+              "켜려면 --with-bars.")
+    for job in tick_jobs + bar_jobs:
         if _bytes >= budget:
             print(f"\n[예산 소진] {job} 이후 작업은 다음 실행에서 이어서 진행합니다.")
             break
@@ -1134,6 +1148,9 @@ def plan(conn):
     if not TICK_TT_ENABLED:
         print("  * tick_tt 는 --daily 에서 제외됩니다(위 합계에는 포함). "
               "F30614 는 nxt_chg_restore.py 로 한도 없이 복원합니다.")
+    if not BARS_ENABLED:
+        print("  * krx_min·nxt_min 도 --daily 에서 제외됩니다(위 합계에는 포함). "
+              "수집 대상이 아닙니다. 켜려면 --with-bars.")
     print("\n권장 순서: tick_ob(호가보강·만료임박) -> nxt_tick(소멸성) -> krx_min -> nxt_min")
     print("  tick_ob 는 이미 받아둔 틱에 호가 4개만 UPDATE 한다(전체 재수집 대비 약 44% 절약).")
     print("  대상은 보관창 안으로 한정돼 스스로 소진되고, 최신 날짜부터 처리해 전진 구간과 이어붙는다.")
@@ -1160,7 +1177,7 @@ class _Tee:
 
 
 def main():
-    global DAILY_LIMIT, TICK_TT_ENABLED, TICK_TT_UNRESOLVED_ONLY
+    global DAILY_LIMIT, TICK_TT_ENABLED, TICK_TT_UNRESOLVED_ONLY, BARS_ENABLED
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
@@ -1174,6 +1191,9 @@ def main():
     ap.add_argument("--with-tick-tt", action="store_true",
                     help="F30614 소급 보강(tick_tt)을 다시 켠다. 기본은 꺼져 있고 "
                          "nxt_chg_restore.py 로 한도 없이 복원한다(TICK_TT_ENABLED 주석 참조)")
+    ap.add_argument("--with-bars", action="store_true",
+                    help="1분봉(krx_min·nxt_min)을 --daily 에 다시 넣는다. 기본은 꺼져 있다 "
+                         "(BARS_ENABLED 주석 참조)")
     ap.add_argument("--tt-all", action="store_true",
                     help="tick_tt 대상을 보관창 안 전체로 넓힌다(11,409콜/3.73GB). 기본은 "
                          "복원기가 못 푼 (일,종목)만 = 332콜/104MB")
@@ -1202,6 +1222,8 @@ def main():
         TICK_TT_ENABLED = True
     if args.tt_all:
         TICK_TT_UNRESOLVED_ONLY = False
+    if args.with_bars:
+        BARS_ENABLED = True
     # --job tick_tt 는 명시적 지시이므로 스위치와 무관하게 그대로 돌린다.
 
     conn = connect()
