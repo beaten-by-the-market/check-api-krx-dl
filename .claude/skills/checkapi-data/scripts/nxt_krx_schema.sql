@@ -235,6 +235,41 @@ CREATE TABLE IF NOT EXISTS nxt_expected (
   PRIMARY KEY (trade_date, code, n)
 ) ENGINE=InnoDB;
 
+-- ------------------------------------------------ NXT 투자자별 일별 매매 (긴 형식)
+-- /stock/m222|m223/rank_invest_date 를 하루씩(sdate=edate=D) 불러 적재한다.
+-- nxt_invest_load.py 가 채운다.
+--
+-- 체결장과 달리 소멸성이 아니다 -- 2025-03-24(NXT 출범)까지 그대로 조회된다(실측).
+-- tick_date 의 101일 보관창이 여기엔 없다. 하루 약 1.9MB(수량만) / 2.5MB(금액 포함)라
+-- 전 기간 355거래일을 받아도 1GB 안쪽이다.
+--
+-- slot = 투자자 구분(1~14). 명세에 대응표가 없어 실측으로 구조를 확정했다(2026-08-27,
+-- m222 2026-08-07 기준. 아래 등식이 원 단위로 성립한다):
+--   slot 12 = 합계(전체).  매수=매도 이고 nxt_daily 그날 시장 거래량과 정확히 일치한다
+--             (67,022,203주 = nxt_daily KOSPI). 투자자 유형이 아니다.
+--   slot 12 = 1+2+3+4+5+6+9+10+11+13  (성분 10개의 합)
+--   slot  8 = 1+2+3+4+5+6+13          (기관계)
+--   slot 14 = 별도 집계(외국인 관련 추정). 성분에 안 들어간다.
+--   slot  7 = 관측된 값이 없다.
+-- 비중으로 본 추정: 10=개인(34.9%), 11=외국인(8.6%), 1=금융투자, 9=기타법인, 13=연기금.
+-- 넥스트레이드 전문설계서의 구분(1000 금융투자 / 2000 보험 / 3000 투신 / 3100 사모 /
+-- 4000 은행 / 5000 기타금융 / 6000 연기금 / 7000 미분류 / 7100 기타법인 / 8000 개인 /
+-- 9000 ID있는 외국인 / 9001 ID없는 외국인)은 12개라 14슬롯과 일대일이 아니다.
+--
+-- 순매수는 저장하지 않는다. 정의상 매수-매도라 파생 가능하고, 그만큼 응답이 커진다.
+-- 값이 전부 0인 (종목,슬롯)은 행을 만들지 않는다. 없으면 0으로 읽으면 된다.
+CREATE TABLE IF NOT EXISTS nxt_invest (
+  trade_date DATE             NOT NULL,
+  code       CHAR(6)          NOT NULL,
+  slot       TINYINT UNSIGNED NOT NULL,   -- 1~14. 12=합계, 8=기관계
+  buy_qty    BIGINT           NULL,       -- F06507_nn 매수거래량
+  sell_qty   BIGINT           NULL,       -- F06505_nn 매도거래량
+  buy_val    BIGINT           NULL,       -- F06510_nn 매수거래대금
+  sell_val   BIGINT           NULL,       -- F06509_nn 매도거래대금
+  PRIMARY KEY (trade_date, code, slot),
+  KEY ix_code (code, trade_date)
+) ENGINE=InnoDB;
+
 -- ------------------------------------------------- chg_type 복원 이력 (한도 미사용)
 -- nxt_chg_restore.py 산출물. 보관창(100일)을 지나 F30614 을 받을 수 없는 구간의
 -- chg_type 을 nxt_daily 기준선 + 부분합으로 복원한다. 복원분과 API 수신분을 구분하려고
