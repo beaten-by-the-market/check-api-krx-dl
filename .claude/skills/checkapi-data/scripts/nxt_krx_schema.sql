@@ -193,8 +193,19 @@ PARTITION BY RANGE COLUMNS (trade_date) (
 -- 이 표와 대조하면 69 제외가 제대로 됐는지 (거래일, 종목) 단위로 확인할 수 있고,
 -- chg_type 을 못 받은 구간에서도 69 수량 = 틱합계 - 공식값 으로 총량을 보정할 수 있다.
 --
--- 세션이 둘로 나뉜다: 정규시장(regular_market) + 종가매매(closing_price) = 그날 전체.
+-- 세 층으로 나뉜다. qty 는 '그날 NXT 전체'가 아니라 정규+종가다 (2026-08-29 정정):
+--   regular_market + closing_price  = qty       <- 틱과 일치. 복원기의 정답지
+--     + 대량·바스켓                 = blk_qty   <- nxt_block_load.py
+--   ────────────────────────────────
+--   = 종목 총거래량                             = nxt_invest slot12 = isuAccTdQty
+--
 -- 종가매매를 빼먹으면 소액 잔차가 남는다(실측 066570 315주, 454910 29주).
+-- 대량은 드물다 -- 355거래일 중 8일 9건뿐이다(005930·034020·030200 등).
+-- 그래도 빼먹으면 CHECK 투자자 데이터와 어긋나고, 실제로 그 8일이 안 맞아서 발견됐다.
+--
+-- 이 등식이 서로 다른 두 기관의 데이터를 교차검증한다:
+--   nxt_invest.slot12(CHECK API) == qty + blk_qty(넥스트레이드)  -> 355/355 거래일 일치.
+-- 지금까지 nxt_daily 는 복원기의 정답지이면서 스스로를 검증할 수단이 없는 것이 약점이었다.
 CREATE TABLE IF NOT EXISTS nxt_daily (
   trade_date DATE    NOT NULL,
   code       CHAR(6) NOT NULL,
