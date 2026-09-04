@@ -224,6 +224,10 @@ def main():
                     help="data_list 를 보내지 않는다(전 필드. 라우트가 무시하는지 대조용)")
     ap.add_argument("--include-expired", action="store_true",
                     help="보관창 밖 날짜도 대상에 넣는다(라우트가 창을 우회하는지 시험)")
+    ap.add_argument("--dates", metavar="YYYY-MM-DD[,...]",
+                    help="그 거래일의 유니버스 전 종목을 받는다. tick_tt 로 chg_type 만 받아둔 날은 "
+                         "--restored 대상에서 빠지는데, 그런 날의 예상체결을 채울 때 쓴다 "
+                         "(tick_tt 는 F16604+F30614 2필드뿐이라 예상체결 계열이 없다)")
     ap.add_argument("--missing", action="store_true",
                     help="틱 자체가 없는 (일,종목)을 받는다. nxt_krx_ingest --daily 의 nxt_tick "
                          "과 같은 대상·같은 순서(오래된 날부터)인데 REST 대신 zip 이라 0.24배다")
@@ -247,7 +251,16 @@ def main():
 
     conn = I.connect()
     try:
-        if args.missing:
+        if args.dates:
+            want = [x.strip() for x in args.dates.split(",") if x.strip()]
+            with conn.cursor() as cur:
+                cur.execute("SELECT trade_date, code, market FROM nxt_universe "
+                            "WHERE trade_date IN (%s) ORDER BY trade_date, code"
+                            % ",".join(["%s"] * len(want)), want)
+                rows = list(cur.fetchall())
+            tg = [(d, c_, mk, "tick", FULL_FIELDS) for d, c_, mk in rows]
+            vol = {}
+        elif args.missing:
             # 틱이 아예 없는 것. 대상 선정은 nxt_krx_ingest 의 nxt_tick 로직을 그대로 쓴다
             # (오래된 날부터 = 먼저 만료되는 것부터). 검증된 쿼리를 두 벌로 만들지 않는다.
             #
@@ -386,6 +399,12 @@ def main():
             print(f"{day} {code}  한도 초과 -- 중단\n  {detail}")
             break
         if kind == "error":
+            # IP 가 바뀌면 이후 전부가 같은 오류다. 계속 돌면 남은 대상을 '시도했는데 실패'로
+            # 태워버리고 재개할 목록만 잃는다(2026-09-04 에 651건이 그렇게 소진됐다).
+            # 대상 문제가 아니라 세션 문제이므로 그 자리에서 멈춘다.
+            if "IP" in detail:
+                print(f"{day} {code}  IP 변경 -- 중단(20분 뒤 재개): {detail[:120]}")
+                break
             print(f"{day} {code}  오류: {detail[:160]}")
             continue
         with open(path, "wb") as f:
