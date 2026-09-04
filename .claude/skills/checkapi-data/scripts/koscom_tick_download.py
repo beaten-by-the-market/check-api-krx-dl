@@ -50,11 +50,21 @@
   Downloads 에 남았다). 그래서 이 스크립트는 첫 바이트를 보고 '{' 면 데이터가 아니라고
   판정하고 파일로 남기지 않는다. 한도 초과 메시지면 즉시 중단한다.
 
-사용
-  python koscom_tick_download.py --plan             # 대상만 출력(호출 없음)
-  python koscom_tick_download.py --probe            # 1건만 때려 라우트 성질을 확인
-  python koscom_tick_download.py --budget 300000000 # 예산만큼만
-  python koscom_tick_download.py --no-data-list     # 전 필드로 받는다(비쌈)
+사용 (대상 선택은 넷 중 하나. 기본은 toolarge 잔여)
+  python koscom_tick_download.py --restored          # 틱은 있는데 chg_type 정답이 없는 (일,종목)
+  python koscom_tick_download.py --missing           # 틱 자체가 없는 (일,종목). 캡처 구간은 자동 제외
+  python koscom_tick_download.py --dates 2026-06-05  # 그 거래일의 유니버스 전 종목
+  python koscom_tick_download.py --only 2026-06-05:005930
+  공통
+  --plan               대상만 출력(호출 없음). 이미 받은 파일은 뺀다
+  --probe              1건만 때려 라우트 성질을 확인
+  --budget 300000000   전송 바이트 예산. 일 한도(1GB)는 다른 작업과 합산이니 여유를 둘 것
+  --backlog N          비용 실측용 거래량 층화 표본
+  data_list 는 어차피 무시된다(항상 36필드). --no-data-list 는 보내지 않을 뿐 결과가 같다.
+
+받은 뒤 반드시 둘 다 돌린다 -- 하나만 돌리면 조용히 반쪽이 된다(2026-09-04 에 실제로 그랬다)
+  python load_koscom_dump.py <폴더> --move-done      # nxt_tick
+  python load_expected.py   <폴더>/done              # nxt_expected
 
 등록 IP 밖에서는 실패한다. .env 의 CHECK_CUST_ID/CHECK_AUTH_KEY 를 쓴다.
 """
