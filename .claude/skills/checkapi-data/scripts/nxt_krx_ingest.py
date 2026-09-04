@@ -167,6 +167,21 @@ TICK_TT_UNRESOLVED_ONLY = True
 # 틱만 따라가는 비용은 하루 약 110MB 다(거래일 0.71일/일 x 155MB). 나머지는 안 쓴다.
 BARS_ENABLED = False
 
+# 1분봉 작업의 날짜 창(--win-from/--win-to). None 이면 종전대로 전 기간이 대상이다.
+#
+# 왜 필요한가: krx_min·nxt_min 의 targets() 에는 날짜 조건이 없어 nxt_universe 전 기간
+# (2025-03-04~, 23.4만 쌍 · 11GB+)을 최신순으로 훑는다. 특정 연구 구간만 채우려면 예산으로
+# 끊는 수밖에 없었고, 그러면 어디까지 채웠는지가 그날 예산에 좌우돼 재현이 안 된다.
+# 창을 명시하면 '이 구간을 다 채우면 끝'이 되어 완료 판정이 생긴다.
+WIN_FROM = None
+WIN_TO = None
+
+# nxt_min 은 틱을 확보한 쌍을 대상에서 뺀다(틱에서 1분봉 재구성이 가능하다는 전제).
+# 그러나 연구용 패널에서는 봉의 생성 경로가 구간마다 달라지면 안 된다 -- 어떤 날은 API 봉,
+# 어떤 날은 우리가 틱에서 만든 봉이면 그 차이가 거래소 비교에 그대로 실린다.
+# 이 스위치를 켜면 틱 보유 여부와 무관하게 API 1분봉을 받아 생성 경로를 하나로 맞춘다.
+BARS_IGNORE_TICK = False
+
 FAM_NXT = {"KOSPI": "m222", "KOSDAQ": "m223"}
 FAM_KRX = {"KOSPI": "m001", "KOSDAQ": "m003"}
 
@@ -184,7 +199,10 @@ AVG_BYTES = {"nxt_tick": 1_152_187,   # 표본 18,204
              "tick_ob":    997_353,   # 표본  7,683
              "tick_tt":    313_612,   # 표본  3,872
              "nxt_min":     64_958,   # 표본 59,944
-             "krx_min":     50_300}   # 미실측(수집 전) 추정치
+             # 2026-08-29 실측(층화 6종목, 거래대금 2~92 분위, 20260605). 종전 추정 50,300 과
+             # 거의 같았다. NXT 평균(64,958)보다 작은 건 KRX 가 봉이 더 촘촘해서가 아니라
+             # 세션이 짧아서다(정규장 382봉 vs NXT 전세션 691봉).
+             "krx_min":     49_869}
 
 # 평시 일 한도. KOSCOM 이 일시적으로 늘려 주기도 한다(2026-08-05~09: 5GB).
 # --daily-limit 로 덮어쓸 수 있다. 안내 문구용이며 실제 상한은 --budget 이다.
@@ -649,6 +667,18 @@ def tick_floor():
     return dt.date.today() - dt.timedelta(days=TICK_RETENTION_DAYS)
 
 
+def _bar_window(col):
+    """1분봉 작업용 날짜 창 술어. (SQL 조각, 인자목록) 을 돌려준다."""
+    sql, args = "", []
+    if WIN_FROM:
+        sql += f" AND {col} >= %s"
+        args.append(WIN_FROM)
+    if WIN_TO:
+        sql += f" AND {col} <= %s"
+        args.append(WIN_TO)
+    return sql, args
+
+
 def targets(conn, job):
     """미완료 (code, trade_date, market) 목록. 틱은 오래된 날부터(소멸성)."""
     with conn.cursor() as cur:
@@ -663,14 +693,17 @@ def targets(conn, job):
             # 틱을 확보하지 못한 쌍에만 필요하다(틱이 있으면 1분봉은 거기서 재구성 가능).
             # 보관창 날짜(< tick_floor)로 거르면 안 된다 — 창이 앞으로 밀리면서 이미 틱을 받아둔
             # 날이 창 밖으로 나가고, 그때 1분봉을 중복 수집하게 된다.
+            win, wargs = _bar_window("u.trade_date")
             cur.execute(
                 "SELECT u.code, u.trade_date, u.market FROM nxt_universe u "
                 "LEFT JOIN ingest_log l ON l.job=%s AND l.code=u.code AND l.trade_date=u.trade_date "
                 "LEFT JOIN ingest_log t ON t.job='nxt_tick' AND t.code=u.code "
                 "                      AND t.trade_date=u.trade_date AND t.status='ok' "
-                "WHERE l.status IS NULL AND t.status IS NULL "
-                "ORDER BY u.trade_date DESC, u.code ASC",
-                ("nxt_min",))
+                "WHERE l.status IS NULL "
+                + ("" if BARS_IGNORE_TICK else "AND t.status IS NULL ")
+                + win +
+                " ORDER BY u.trade_date DESC, u.code ASC",
+                ["nxt_min"] + wargs)
         elif job == "tick_ob":
             # 이미 틱을 받아둔 (날짜,종목) 중 보관창 안이면서 아직 호가 보강 안 한 것.
             # 최신 날짜부터 처리한다(DESC): 전진 수집이 5/19+ 를 채우므로, 보강도 5/18 에서
@@ -714,8 +747,9 @@ def targets(conn, job):
                 ") t "
                 "LEFT JOIN ingest_log l ON l.job=%s AND l.code=t.code AND l.trade_date=t.trade_date "
                 "WHERE l.status IS NULL "
-                "ORDER BY t.trade_date DESC, t.code ASC",
-                ("krx_min",))
+                + _bar_window("t.trade_date")[0] +
+                " ORDER BY t.trade_date DESC, t.code ASC",
+                ["krx_min"] + _bar_window("t.trade_date")[1])
         else:
             raise SystemExit(f"알 수 없는 job: {job}")
         return cur.fetchall()
@@ -1178,6 +1212,7 @@ class _Tee:
 
 def main():
     global DAILY_LIMIT, TICK_TT_ENABLED, TICK_TT_UNRESOLVED_ONLY, BARS_ENABLED
+    global WIN_FROM, WIN_TO, BARS_IGNORE_TICK
     ap = argparse.ArgumentParser(description="NXT 틱 + KRX/NXT 1분봉 -> MySQL 수집기")
     ap.add_argument("--log", metavar="DIR",
                     help="이 디렉터리에 ingest_YYYYMMDD.log 로 진행 로그를 남긴다(스케줄러용)")
@@ -1191,6 +1226,13 @@ def main():
     ap.add_argument("--with-tick-tt", action="store_true",
                     help="F30614 소급 보강(tick_tt)을 다시 켠다. 기본은 꺼져 있고 "
                          "nxt_chg_restore.py 로 한도 없이 복원한다(TICK_TT_ENABLED 주석 참조)")
+    ap.add_argument("--win-from", metavar="YYYYMMDD",
+                    help="1분봉 작업의 대상 시작일. 안 주면 전 기간(nxt_universe 전체)이 대상이다.")
+    ap.add_argument("--win-to", metavar="YYYYMMDD",
+                    help="1분봉 작업의 대상 종료일.")
+    ap.add_argument("--bars-ignore-tick", action="store_true",
+                    help="nxt_min 에서 '틱 보유 쌍 제외'를 끈다. 봉의 생성 경로를 API 하나로 "
+                         "맞춰야 하는 연구용 패널에 쓴다.")
     ap.add_argument("--with-bars", action="store_true",
                     help="1분봉(krx_min·nxt_min)을 --daily 에 다시 넣는다. 기본은 꺼져 있다 "
                          "(BARS_ENABLED 주석 참조)")
@@ -1224,6 +1266,18 @@ def main():
         TICK_TT_UNRESOLVED_ONLY = False
     if args.with_bars:
         BARS_ENABLED = True
+
+    def _wd(s):
+        return dt.date(int(s[:4]), int(s[4:6]), int(s[6:]))
+    if args.win_from:
+        WIN_FROM = _wd(args.win_from)
+    if args.win_to:
+        WIN_TO = _wd(args.win_to)
+    if args.bars_ignore_tick:
+        BARS_IGNORE_TICK = True
+    if WIN_FROM or WIN_TO:
+        print(f"[창] 1분봉 대상 구간 {WIN_FROM or '처음'} ~ {WIN_TO or '끝'}"
+              + ("  (틱 보유 쌍도 포함)" if BARS_IGNORE_TICK else ""))
     # --job tick_tt 는 명시적 지시이므로 스위치와 무관하게 그대로 돌린다.
 
     conn = connect()
